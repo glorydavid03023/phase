@@ -48,8 +48,8 @@ use crate::types::ability::{
     FilterProp, GainLifePlayer, GameRestriction, ManaProduction, MultiTargetSpec, ObjectScope,
     PlayerFilter, PlayerScope, PreventionAmount, PtValue, QuantityExpr, QuantityRef,
     ReplacementDefinition, RestrictionExpiry, RestrictionPlayerScope, RoundingMode,
-    StaticCondition, StaticDefinition, TargetFilter, TriggerDefinition, TypeFilter, TypedFilter,
-    UnlessCost, UnlessPayModifier,
+    StaticCondition, StaticDefinition, TargetChoiceTiming, TargetFilter, TriggerDefinition,
+    TypeFilter, TypedFilter, UnlessCost, UnlessPayModifier,
 };
 use crate::types::card_type::{CoreType, Supertype};
 use crate::types::game_state::{DistributionUnit, NextSpellModifier, RetargetScope};
@@ -8848,6 +8848,7 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
         // ── Build AbilityDefinition from ClauseIr ──
         let is_target_only = matches!(clause_ir.parsed.effect, Effect::TargetOnly { .. });
         let mut def = AbilityDefinition::new(kind, clause_ir.parsed.effect.clone());
+        def.target_choice_timing = target_choice_timing_for_clause(clause_ir);
         let clause_sub = if is_target_only {
             def.sub_ability = clause_ir.parsed.sub_ability.clone();
             None
@@ -9138,6 +9139,26 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
     rewire_attach_forward_result(&mut result);
 
     result
+}
+
+fn target_choice_timing_for_clause(clause_ir: &ClauseIr) -> TargetChoiceTiming {
+    let Effect::ChangeZone {
+        origin: Some(origin),
+        ..
+    } = &clause_ir.parsed.effect
+    else {
+        return TargetChoiceTiming::Stack;
+    };
+    if *origin == Zone::Battlefield {
+        return TargetChoiceTiming::Stack;
+    }
+
+    let lower = clause_ir.source_text.to_ascii_lowercase();
+    if nom_primitives::scan_contains(&lower, "target ") {
+        TargetChoiceTiming::Stack
+    } else {
+        TargetChoiceTiming::Resolution
+    }
 }
 
 /// CR 303.4f / CR 301.5b / CR 603.7d: Walk the chain and set

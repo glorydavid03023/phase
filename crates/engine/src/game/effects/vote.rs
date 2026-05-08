@@ -161,6 +161,7 @@ pub fn resolve_tally(
             optional: per_choice_effect[idx].optional,
             optional_for: None,
             multi_target: None,
+            target_choice_timing: per_choice_effect[idx].target_choice_timing,
             description: per_choice_effect[idx].description.clone(),
             repeat_for: Some(QuantityExpr::Fixed {
                 value: *votes as i32,
@@ -211,6 +212,7 @@ fn resolved_from_def(
         optional: def.optional,
         optional_for: None,
         multi_target: None,
+        target_choice_timing: def.target_choice_timing,
         description: def.description.clone(),
         repeat_for: None,
         forward_result: def.forward_result,
@@ -342,6 +344,7 @@ mod tests {
             optional: false,
             optional_for: None,
             multi_target: None,
+            target_choice_timing: crate::types::ability::TargetChoiceTiming::Stack,
             description: None,
             repeat_for: None,
             forward_result: false,

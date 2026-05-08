@@ -92,6 +92,7 @@ pub(crate) fn handle_select_modes(
         pending_sel.casting_variant = pending.casting_variant;
         pending_sel.origin_zone = pending.origin_zone;
         pending_sel.additional_cost_flow = pending.additional_cost_flow;
+        pending_sel.deferred_target_selection = pending.deferred_target_selection;
         pending_sel.declared_kickers_to_pay = pending.declared_kickers_to_pay;
         pending_sel.declined_kickers = pending.declined_kickers;
         return Ok(WaitingFor::TargetSelection {
@@ -156,6 +157,7 @@ pub(crate) fn handle_select_targets(
             pending_dist.distribute = Some(unit.clone());
             pending_dist.origin_zone = pending.origin_zone;
             pending_dist.additional_cost_flow = pending.additional_cost_flow.clone();
+            pending_dist.deferred_target_selection = pending.deferred_target_selection;
             pending_dist.declared_kickers_to_pay = pending.declared_kickers_to_pay.clone();
             pending_dist.declined_kickers = pending.declined_kickers.clone();
             state.pending_cast = Some(Box::new(pending_dist));

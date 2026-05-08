@@ -6209,6 +6209,22 @@ pub struct CostReduction {
     pub count: QuantityExpr,
 }
 
+/// CR 601.2c + CR 603.3d + CR 608.2d: Whether object/player choices for an
+/// ability are announced while casting/putting the ability on the stack, or
+/// chosen later during resolution by the resolving instruction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TargetChoiceTiming {
+    #[default]
+    Stack,
+    Resolution,
+}
+
+impl TargetChoiceTiming {
+    pub fn is_stack(timing: &Self) -> bool {
+        matches!(timing, Self::Stack)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Definition types -- fully typed, zero HashMap
 // ---------------------------------------------------------------------------
@@ -6258,6 +6274,12 @@ pub struct AbilityDefinition {
     /// CR 601.2c + CR 115.1d.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multi_target: Option<MultiTargetSpec>,
+    /// CR 601.2c + CR 608.2d: Timing for object/player choices represented by
+    /// this ability's target filter. Stack timing is true targeting; resolution
+    /// timing is used for non-target instructions such as "return a land card
+    /// from your graveyard" after another instruction has changed zone state.
+    #[serde(default, skip_serializing_if = "TargetChoiceTiming::is_stack")]
+    pub target_choice_timing: TargetChoiceTiming,
     /// CR 601.2d: When set, the controller distributes this effect among chosen targets.
     /// Triggers WaitingFor::DistributeAmong during casting target selection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -6336,6 +6358,7 @@ impl AbilityDefinition {
             optional: false,
             optional_for: None,
             multi_target: None,
+            target_choice_timing: TargetChoiceTiming::Stack,
             distribute: None,
             unless_pay: None,
             modal: None,
@@ -6354,6 +6377,11 @@ impl AbilityDefinition {
 
     pub fn multi_target(mut self, spec: MultiTargetSpec) -> Self {
         self.multi_target = Some(spec);
+        self
+    }
+
+    pub fn target_choice_timing(mut self, timing: TargetChoiceTiming) -> Self {
+        self.target_choice_timing = timing;
         self
     }
 
@@ -8175,6 +8203,10 @@ pub struct ResolvedAbility {
     /// Variable-count targeting preserved from the originating ability definition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multi_target: Option<MultiTargetSpec>,
+    /// CR 601.2c + CR 608.2d: Whether target-like filters are announced on the
+    /// stack or selected during resolution.
+    #[serde(default, skip_serializing_if = "TargetChoiceTiming::is_stack")]
+    pub target_choice_timing: TargetChoiceTiming,
     /// Human-readable description of this ability (from Oracle text / trigger line).
     /// Used by `OptionalEffectChoice` to tell the player what they're choosing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -8244,6 +8276,7 @@ impl ResolvedAbility {
             optional: false,
             optional_for: None,
             multi_target: None,
+            target_choice_timing: TargetChoiceTiming::Stack,
             description: None,
             repeat_for: None,
             forward_result: false,

@@ -7201,6 +7201,7 @@ mod tests {
             origin_zone: crate::types::zones::Zone::Hand,
             additional_cost_flow: None,
             deferred_modal_choice: None,
+            deferred_target_selection: false,
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),

@@ -1034,7 +1034,14 @@ pub fn auto_advance(state: &mut GameState, events: &mut Vec<GameEvent>) -> Waiti
                         return state.waiting_for.clone();
                     }
                 }
-                // CR 505.1: The active player receives priority at the start of their main phase.
+                // CR 603.2b + CR 603.3: beginning-of-main-phase triggers are
+                // put on the stack before the active player receives priority.
+                if process_phase_triggers(state) {
+                    return WaitingFor::Priority {
+                        player: state.active_player,
+                    };
+                }
+                // CR 505.6: The active player receives priority during a main phase.
                 return WaitingFor::Priority {
                     player: state.active_player,
                 };
@@ -2119,6 +2126,61 @@ mod tests {
             WaitingFor::Priority {
                 player: PlayerId(0)
             }
+        ));
+    }
+
+    #[test]
+    fn auto_advance_processes_precombat_main_triggers_before_priority() {
+        let mut state = setup();
+        state.phase = Phase::Untap;
+        state.turn_number = 2;
+
+        create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Draw Step Card".to_string(),
+            Zone::Library,
+        );
+        let source = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Precombat Trigger".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .trigger_definitions
+            .push(
+                crate::types::ability::TriggerDefinition::new(
+                    crate::types::triggers::TriggerMode::Phase,
+                )
+                .phase(Phase::PreCombatMain)
+                .execute(crate::types::ability::AbilityDefinition::new(
+                    crate::types::ability::AbilityKind::Spell,
+                    crate::types::ability::Effect::Draw {
+                        count: crate::types::ability::QuantityExpr::Fixed { value: 1 },
+                        target: crate::types::ability::TargetFilter::Controller,
+                    },
+                )),
+            );
+
+        let waiting = auto_advance(&mut state, &mut Vec::new());
+
+        assert_eq!(state.phase, Phase::PreCombatMain);
+        assert!(matches!(
+            waiting,
+            WaitingFor::Priority {
+                player: PlayerId(0)
+            }
+        ));
+        assert_eq!(state.stack.len(), 1);
+        assert!(matches!(
+            state.stack[0].kind,
+            crate::types::game_state::StackEntryKind::TriggeredAbility { .. }
         ));
     }
 

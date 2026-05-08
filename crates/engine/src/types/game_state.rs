@@ -638,6 +638,11 @@ pub struct PendingCast {
     /// in the normal cost-payment step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deferred_modal_choice: Option<ModalChoice>,
+    /// CR 601.2b/c + CR 702.33g: Spells with kicker-dependent target sets
+    /// announce kicker intent before targets, then pay declared kicker costs
+    /// during the normal cost-payment step after targets are chosen.
+    #[serde(default)]
+    pub deferred_target_selection: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub declared_kickers_to_pay: Vec<KickerVariant>,
     /// CR 702.33f: Non-repeatable kicker options the player has declined in
@@ -678,6 +683,7 @@ impl PendingCast {
             origin_zone: Zone::Hand,
             additional_cost_flow: None,
             deferred_modal_choice: None,
+            deferred_target_selection: false,
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
@@ -3672,6 +3678,7 @@ mod tests {
                 origin_zone: Zone::Hand,
                 additional_cost_flow: None,
                 deferred_modal_choice: None,
+                deferred_target_selection: false,
                 declared_kickers_to_pay: Vec::new(),
                 declined_kickers: Vec::new(),
                 convoked_creatures: Vec::new(),
@@ -3935,6 +3942,7 @@ mod tests {
             origin_zone: Zone::Hand,
             additional_cost_flow: None,
             deferred_modal_choice: None,
+            deferred_target_selection: false,
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),

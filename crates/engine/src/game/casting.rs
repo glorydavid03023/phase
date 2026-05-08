@@ -1,8 +1,8 @@
 use crate::types::ability::{
-    AbilityCost, AbilityDefinition, AbilityKind, AdditionalCost, CardPlayMode, CastingPermission,
-    ChoiceType, ContinuousModification, Duration, Effect, GameRestriction, ModalSelectionCondition,
-    QuantityExpr, ResolvedAbility, RestrictionPlayerScope, StaticDefinition, TargetFilter,
-    TargetRef,
+    AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AdditionalCost, CardPlayMode,
+    CastingPermission, ChoiceType, ContinuousModification, Duration, Effect, GameRestriction,
+    ModalSelectionCondition, QuantityExpr, ResolvedAbility, RestrictionPlayerScope,
+    StaticDefinition, TargetFilter, TargetRef,
 };
 use crate::types::card::LayoutKind;
 use crate::types::events::GameEvent;
@@ -3330,6 +3330,29 @@ fn continue_with_prepared(
 
     let target_slots = build_target_slots(state, &resolved)?;
     if !target_slots.is_empty() {
+        let has_kicker_cost = state
+            .objects
+            .get(&prepared.object_id)
+            .and_then(|obj| obj.additional_cost.as_ref())
+            .is_some_and(|additional| matches!(additional, AdditionalCost::Kicker { .. }));
+        if has_kicker_cost && requires_additional_cost_declaration_before_targets(&resolved) {
+            return casting_costs::begin_target_dependent_additional_cost_declaration(
+                state,
+                player,
+                prepared.object_id,
+                prepared.card_id,
+                resolved,
+                prepared.mana_cost,
+                prepared.casting_variant,
+                prepared
+                    .ability_def
+                    .as_ref()
+                    .and_then(|a| a.distribute.clone()),
+                prepared.origin_zone,
+                events,
+            );
+        }
+
         if let Some(targets) =
             auto_select_targets_for_ability(state, &resolved, &target_slots, &[])?
         {
@@ -3393,6 +3416,16 @@ fn modal_requires_additional_cost_declaration(modal: &crate::types::ability::Mod
             }
         )
     })
+}
+
+fn requires_additional_cost_declaration_before_targets(ability: &ResolvedAbility) -> bool {
+    let Some(sub_ability) = ability.sub_ability.as_deref() else {
+        return false;
+    };
+    matches!(
+        sub_ability.condition,
+        Some(AbilityCondition::AdditionalCostPaidInstead)
+    ) && crate::game::triggers::extract_target_filter_from_effect(&sub_ability.effect).is_some()
 }
 
 /// Fast path for permanent spells with no spell-level ability.
@@ -9766,6 +9799,199 @@ mod tests {
         assert!(ability.context.additional_cost_paid);
         assert_eq!(ability.context.kickers_paid, vec![KickerVariant::First]);
         assert_eq!(state.players[0].mana_pool.count_color(ManaType::Green), 0);
+    }
+
+    fn create_kicker_instead_target_spell(state: &mut GameState) -> (ObjectId, ObjectId, ObjectId) {
+        let spell_id = create_object(
+            state,
+            CardId(60),
+            PlayerId(0),
+            "Kicker Target Spell".to_string(),
+            Zone::Hand,
+        );
+        let artifact_id = create_object(
+            state,
+            CardId(61),
+            PlayerId(1),
+            "Artifact".to_string(),
+            Zone::Battlefield,
+        );
+        let creature_id = create_object(
+            state,
+            CardId(62),
+            PlayerId(1),
+            "Creature".to_string(),
+            Zone::Battlefield,
+        );
+
+        {
+            let artifact = state.objects.get_mut(&artifact_id).unwrap();
+            artifact.card_types.core_types.push(CoreType::Artifact);
+        }
+        {
+            let creature = state.objects.get_mut(&creature_id).unwrap();
+            creature.card_types.core_types.push(CoreType::Creature);
+        }
+        {
+            let spell = state.objects.get_mut(&spell_id).unwrap();
+            spell.card_types.core_types.push(CoreType::Instant);
+            spell.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::Green],
+                generic: 1,
+            };
+            spell.additional_cost = Some(AdditionalCost::Kicker {
+                costs: vec![AbilityCost::Mana {
+                    cost: ManaCost::Cost {
+                        shards: vec![ManaCostShard::Black],
+                        generic: 1,
+                    },
+                }],
+                repeatable: false,
+            });
+            Arc::make_mut(&mut spell.abilities).push(
+                AbilityDefinition::new(
+                    AbilityKind::Spell,
+                    Effect::ChangeZone {
+                        origin: None,
+                        destination: Zone::Exile,
+                        target: TargetFilter::Typed(TypedFilter::new(TypeFilter::Artifact)),
+                        owner_library: false,
+                        enter_transformed: false,
+                        under_your_control: false,
+                        enter_tapped: false,
+                        enters_attacking: false,
+                        up_to: false,
+                        enter_with_counters: vec![],
+                    },
+                )
+                .sub_ability(
+                    AbilityDefinition::new(
+                        AbilityKind::Spell,
+                        Effect::ChangeZone {
+                            origin: None,
+                            destination: Zone::Exile,
+                            target: TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature)),
+                            owner_library: false,
+                            enter_transformed: false,
+                            under_your_control: false,
+                            enter_tapped: false,
+                            enters_attacking: false,
+                            up_to: false,
+                            enter_with_counters: vec![],
+                        },
+                    )
+                    .condition(AbilityCondition::AdditionalCostPaidInstead),
+                ),
+            );
+        }
+
+        (spell_id, artifact_id, creature_id)
+    }
+
+    #[test]
+    fn kicker_instead_target_declines_before_base_target_selection() {
+        let mut state = setup_game_at_main_phase();
+        let (spell_id, artifact_id, _) = create_kicker_instead_target_spell(&mut state);
+        add_mana(&mut state, PlayerId(0), ManaType::Green, 1);
+        add_mana(&mut state, PlayerId(0), ManaType::Colorless, 3);
+
+        let mut events = Vec::new();
+        state.waiting_for =
+            handle_cast_spell(&mut state, PlayerId(0), spell_id, CardId(60), &mut events)
+                .expect("kicker-dependent targets should prompt for kicker first");
+
+        let WaitingFor::OptionalCostChoice {
+            pending_cast, cost, ..
+        } = &state.waiting_for
+        else {
+            panic!("expected OptionalCostChoice, got {:?}", state.waiting_for);
+        };
+        let pending_cast = *pending_cast.clone();
+        let cost = cost.clone();
+        state.waiting_for = crate::game::engine_casting::handle_optional_cost_choice(
+            &mut state,
+            PlayerId(0),
+            pending_cast,
+            &cost,
+            false,
+            &mut events,
+        )
+        .expect("declining kicker should continue to target selection");
+
+        let WaitingFor::Priority {
+            player: PlayerId(0),
+        } = &state.waiting_for
+        else {
+            panic!("expected Priority, got {:?}", state.waiting_for);
+        };
+        let ability = state.stack[0].ability().unwrap();
+        assert_eq!(ability.targets, vec![TargetRef::Object(artifact_id)]);
+    }
+
+    #[test]
+    fn kicker_instead_target_paid_selects_replacement_target_only() {
+        let mut state = setup_game_at_main_phase();
+        let (spell_id, artifact_id, creature_id) = create_kicker_instead_target_spell(&mut state);
+        let second_creature_id = create_object(
+            &mut state,
+            CardId(63),
+            PlayerId(1),
+            "Second Creature".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&second_creature_id)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+        add_mana(&mut state, PlayerId(0), ManaType::Green, 1);
+        add_mana(&mut state, PlayerId(0), ManaType::Black, 1);
+        add_mana(&mut state, PlayerId(0), ManaType::Colorless, 4);
+
+        let mut events = Vec::new();
+        state.waiting_for =
+            handle_cast_spell(&mut state, PlayerId(0), spell_id, CardId(60), &mut events)
+                .expect("kicker-dependent targets should prompt for kicker first");
+
+        let WaitingFor::OptionalCostChoice {
+            pending_cast, cost, ..
+        } = &state.waiting_for
+        else {
+            panic!("expected OptionalCostChoice, got {:?}", state.waiting_for);
+        };
+        let pending_cast = *pending_cast.clone();
+        let cost = cost.clone();
+        state.waiting_for = crate::game::engine_casting::handle_optional_cost_choice(
+            &mut state,
+            PlayerId(0),
+            pending_cast,
+            &cost,
+            true,
+            &mut events,
+        )
+        .expect("paying kicker should continue to replacement target selection");
+
+        let WaitingFor::TargetSelection {
+            target_slots,
+            pending_cast,
+            ..
+        } = &state.waiting_for
+        else {
+            panic!("expected TargetSelection, got {:?}", state.waiting_for);
+        };
+        assert!(pending_cast.ability.context.additional_cost_paid);
+        assert_eq!(target_slots.len(), 1);
+        assert!(!target_slots[0]
+            .legal_targets
+            .contains(&TargetRef::Object(artifact_id)));
+        assert!(target_slots[0]
+            .legal_targets
+            .contains(&TargetRef::Object(creature_id)));
+        assert!(target_slots[0]
+            .legal_targets
+            .contains(&TargetRef::Object(second_creature_id)));
     }
 
     #[test]

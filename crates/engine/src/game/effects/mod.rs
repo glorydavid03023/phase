@@ -2528,7 +2528,8 @@ mod tests {
     use crate::types::ability::{
         AbilityCondition, AbilityDefinition, AbilityKind, CastingPermission, ControllerRef,
         DelayedTriggerCondition, Duration, FilterProp, GainLifePlayer, PlayerFilter, PlayerScope,
-        PtValue, QuantityExpr, QuantityRef, SpellContext, TargetFilter, TargetRef, TypedFilter,
+        PtValue, QuantityExpr, QuantityRef, SpellContext, TargetFilter, TargetRef, TypeFilter,
+        TypedFilter,
     };
     use crate::types::card_type::CoreType;
     use crate::types::counter::CounterType;
@@ -2621,6 +2622,91 @@ mod tests {
             }
             other => panic!("expected keyed OptionalEffectChoice, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn optional_zone_choice_after_mill_can_return_milled_land() {
+        let mut state = GameState::new_two_player(42);
+        let source_id = ObjectId(100);
+        let land_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Milled Land".to_string(),
+            Zone::Library,
+        );
+        state
+            .objects
+            .get_mut(&land_id)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Land);
+        create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Milled Spell A".to_string(),
+            Zone::Library,
+        );
+        create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(0),
+            "Milled Spell B".to_string(),
+            Zone::Library,
+        );
+
+        let mut ability = ResolvedAbility::new(
+            Effect::Mill {
+                count: QuantityExpr::Fixed { value: 3 },
+                target: TargetFilter::Controller,
+                destination: Zone::Graveyard,
+            },
+            vec![],
+            source_id,
+            PlayerId(0),
+        );
+        let mut return_land = ResolvedAbility::new(
+            Effect::ChangeZone {
+                origin: Some(Zone::Graveyard),
+                destination: Zone::Battlefield,
+                target: TargetFilter::Typed(TypedFilter::new(TypeFilter::Land)),
+                owner_library: false,
+                enter_transformed: false,
+                under_your_control: false,
+                enter_tapped: true,
+                enters_attacking: false,
+                up_to: false,
+                enter_with_counters: vec![],
+            },
+            vec![],
+            source_id,
+            PlayerId(0),
+        );
+        return_land.optional = true;
+        return_land.target_choice_timing = crate::types::ability::TargetChoiceTiming::Resolution;
+        ability.sub_ability = Some(Box::new(return_land));
+
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+        assert!(matches!(
+            state.waiting_for,
+            WaitingFor::OptionalEffectChoice { .. }
+        ));
+        assert_eq!(state.players[0].graveyard.len(), 3);
+
+        crate::game::engine_payment_choices::handle_optional_effect_choice(
+            &mut state,
+            true,
+            &mut events,
+        )
+        .unwrap();
+
+        let land = state.objects.get(&land_id).unwrap();
+        assert_eq!(land.zone, Zone::Battlefield);
+        assert!(land.tapped);
     }
 
     #[test]

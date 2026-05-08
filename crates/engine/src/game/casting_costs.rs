@@ -180,7 +180,7 @@ fn handle_decide_kicker_cost(
 
     pending.ability.context.additional_cost_paid = true;
     pending.ability.context.kickers_paid.push(variant);
-    if pending.deferred_modal_choice.is_some() {
+    if pending.deferred_modal_choice.is_some() || pending.deferred_target_selection {
         pending.declared_kickers_to_pay.push(variant);
         return finish_pending_cost_or_cast(state, player, pending, events);
     }
@@ -244,6 +244,16 @@ fn finish_pending_cost_or_cast(
         pending.additional_cost_flow,
         Some(AdditionalCost::Kicker { .. })
     ) {
+        if pending.deferred_target_selection {
+            if let Some((_, current_cost, _)) = next_kicker_option(state, player, &pending) {
+                return Ok(WaitingFor::OptionalCostChoice {
+                    player,
+                    cost: AdditionalCost::Optional(current_cost),
+                    pending_cast: Box::new(pending),
+                });
+            }
+            return begin_deferred_target_selection(state, player, pending, events);
+        }
         if pending.deferred_modal_choice.is_none() {
             if let Some(cost) = next_declared_kicker_cost(&mut pending) {
                 return pay_additional_cost(state, player, cost, pending, events);
@@ -290,6 +300,36 @@ fn finish_pending_cost_or_cast(
         pending.origin_zone,
         events,
     )
+}
+
+fn begin_deferred_target_selection(
+    state: &mut GameState,
+    player: PlayerId,
+    mut pending: PendingCast,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    pending.deferred_target_selection = false;
+    let target_slots = build_target_slots(state, &pending.ability)?;
+    if target_slots.is_empty() {
+        return finish_pending_cost_or_cast(state, player, pending, events);
+    }
+    if let Some(targets) =
+        auto_select_targets_for_ability(state, &pending.ability, &target_slots, &[])?
+    {
+        let mut ability = pending.ability.clone();
+        assign_targets_in_chain(state, &mut ability, &targets)?;
+        pending.ability = ability;
+        return finish_pending_cost_or_cast(state, player, pending, events);
+    }
+
+    let selection =
+        begin_target_selection_for_ability(state, &pending.ability, &target_slots, &[])?;
+    Ok(WaitingFor::TargetSelection {
+        player,
+        pending_cast: Box::new(pending),
+        target_slots,
+        selection,
+    })
 }
 
 fn next_declared_kicker_cost(pending: &mut PendingCast) -> Option<AbilityCost> {
@@ -794,6 +834,47 @@ pub(super) fn begin_modal_additional_cost_declaration(
     pending.distribute = distribute;
     pending.origin_zone = origin_zone;
     pending.deferred_modal_choice = Some(modal);
+    pending.additional_cost_flow = Some(AdditionalCost::Kicker { costs, repeatable });
+    finish_pending_cost_or_cast(state, player, pending, events)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn begin_target_dependent_additional_cost_declaration(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    card_id: CardId,
+    ability: ResolvedAbility,
+    cost: ManaCost,
+    casting_variant: CastingVariant,
+    distribute: Option<DistributionUnit>,
+    origin_zone: Zone,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    let additional = state
+        .objects
+        .get(&object_id)
+        .and_then(|obj| obj.additional_cost.clone());
+    let Some(AdditionalCost::Kicker { costs, repeatable }) = additional else {
+        return pay_and_push(
+            state,
+            player,
+            object_id,
+            card_id,
+            ability,
+            &cost,
+            casting_variant,
+            distribute,
+            origin_zone,
+            events,
+        );
+    };
+
+    let mut pending = PendingCast::new(object_id, card_id, ability, cost);
+    pending.casting_variant = casting_variant;
+    pending.distribute = distribute;
+    pending.origin_zone = origin_zone;
+    pending.deferred_target_selection = true;
     pending.additional_cost_flow = Some(AdditionalCost::Kicker { costs, repeatable });
     finish_pending_cost_or_cast(state, player, pending, events)
 }
@@ -3087,6 +3168,7 @@ mod tests {
             origin_zone: Zone::Hand,
             additional_cost_flow: None,
             deferred_modal_choice: None,
+            deferred_target_selection: false,
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
@@ -5103,6 +5185,7 @@ mod tests {
             origin_zone: Zone::Hand,
             additional_cost_flow: None,
             deferred_modal_choice: None,
+            deferred_target_selection: false,
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
@@ -5217,6 +5300,7 @@ mod tests {
             origin_zone: Zone::Hand,
             additional_cost_flow: None,
             deferred_modal_choice: None,
+            deferred_target_selection: false,
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
@@ -5300,6 +5384,7 @@ mod tests {
             origin_zone: Zone::Hand,
             additional_cost_flow: None,
             deferred_modal_choice: None,
+            deferred_target_selection: false,
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
@@ -5372,6 +5457,7 @@ mod tests {
             origin_zone: Zone::Hand,
             additional_cost_flow: None,
             deferred_modal_choice: None,
+            deferred_target_selection: false,
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),
@@ -5477,6 +5563,7 @@ mod tests {
             origin_zone: Zone::Graveyard,
             additional_cost_flow: None,
             deferred_modal_choice: None,
+            deferred_target_selection: false,
             declared_kickers_to_pay: Vec::new(),
             declined_kickers: Vec::new(),
             convoked_creatures: Vec::new(),

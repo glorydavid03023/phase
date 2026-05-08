@@ -1,7 +1,7 @@
 use crate::types::ability::{
     AbilityCondition, AbilityDefinition, ControllerRef, Effect, ModalChoice,
     ModalSelectionCondition, ModalSelectionConstraint, QuantityExpr, QuantityRef, ResolvedAbility,
-    SpellContext, TargetFilter, TargetRef, TypeFilter, TypedFilter,
+    SpellContext, TargetChoiceTiming, TargetFilter, TargetRef, TypeFilter, TypedFilter,
 };
 use crate::types::game_state::{
     GameState, TargetSelectionConstraint, TargetSelectionProgress, TargetSelectionSlot,
@@ -41,6 +41,7 @@ pub fn build_resolved_from_def(
     resolved.optional = def.optional;
     resolved.optional_for = def.optional_for;
     resolved.multi_target = def.multi_target.clone();
+    resolved.target_choice_timing = def.target_choice_timing;
     resolved.repeat_for = def.repeat_for.clone();
     resolved.description = def.description.clone();
     resolved.forward_result = def.forward_result;
@@ -101,8 +102,10 @@ pub(crate) fn append_to_sub_chain(ability: &mut ResolvedAbility, next: ResolvedA
 }
 
 pub fn find_first_target_filter_in_chain(ability: &ResolvedAbility) -> Option<&TargetFilter> {
-    if let Some(filter) = triggers::extract_target_filter_from_effect(&ability.effect) {
-        return Some(filter);
+    if ability.target_choice_timing == TargetChoiceTiming::Stack {
+        if let Some(filter) = triggers::extract_target_filter_from_effect(&ability.effect) {
+            return Some(filter);
+        }
     }
     ability
         .sub_ability
@@ -639,6 +642,18 @@ fn collect_target_slots(
     ability: &ResolvedAbility,
     slots: &mut Vec<TargetSelectionSlot>,
 ) -> Result<(), EngineError> {
+    if let Some(sub_ability) = ability.sub_ability.as_deref().filter(|sub| {
+        matches!(
+            sub.condition,
+            Some(AbilityCondition::AdditionalCostPaidInstead)
+        )
+    }) {
+        if ability.context.additional_cost_paid {
+            collect_target_slots(state, sub_ability, slots)?;
+            return Ok(());
+        }
+    }
+
     // CR 701.12a: ExchangeControl carries two distinct per-slot filters. SelfRef
     // slots (e.g. "this artifact and target …") are filled by the resolver from
     // ability.source_id and don't require a player choice. Surface one slot per
@@ -702,7 +717,9 @@ fn collect_target_slots(
         // at filter-evaluation time via `ability.targets`. Runs before the primary
         // filter so the player is chosen first (target declaration order matches
         // Oracle text order).
-        if effect_references_target_player(&ability.effect) {
+        if ability.target_choice_timing == TargetChoiceTiming::Stack
+            && effect_references_target_player(&ability.effect)
+        {
             let player_targets = targeting::find_legal_targets(
                 state,
                 &TargetFilter::Player,
@@ -719,32 +736,35 @@ fn collect_target_slots(
                 optional: ability.optional_targeting,
             });
         }
-        if let Some(filter) = triggers::extract_target_filter_from_effect(&ability.effect) {
-            let legal_targets = legal_targets_for_ability_filter(state, ability, filter, slots);
-            if legal_targets.is_empty() && !ability.optional_targeting {
-                return Err(EngineError::ActionNotAllowed(
-                    "No legal targets available".to_string(),
-                ));
-            }
-            if let Some(spec) = ability.multi_target.as_ref() {
-                if multi_target_max_needs_quantity_choice(state, ability, spec) {
+        if ability.target_choice_timing == TargetChoiceTiming::Stack {
+            if let Some(filter) = triggers::extract_target_filter_from_effect(&ability.effect) {
+                let legal_targets = legal_targets_for_ability_filter(state, ability, filter, slots);
+                if legal_targets.is_empty() && !ability.optional_targeting {
                     return Err(EngineError::ActionNotAllowed(
-                        "Target count requires a resolved quantity before target selection"
-                            .to_string(),
+                        "No legal targets available".to_string(),
                     ));
                 }
-                let slot_count = multi_target_slot_count(state, ability, spec, legal_targets.len());
-                for slot_index in 0..slot_count {
+                if let Some(spec) = ability.multi_target.as_ref() {
+                    if multi_target_max_needs_quantity_choice(state, ability, spec) {
+                        return Err(EngineError::ActionNotAllowed(
+                            "Target count requires a resolved quantity before target selection"
+                                .to_string(),
+                        ));
+                    }
+                    let slot_count =
+                        multi_target_slot_count(state, ability, spec, legal_targets.len());
+                    for slot_index in 0..slot_count {
+                        slots.push(TargetSelectionSlot {
+                            legal_targets: legal_targets.clone(),
+                            optional: slot_index >= spec.min,
+                        });
+                    }
+                } else {
                     slots.push(TargetSelectionSlot {
-                        legal_targets: legal_targets.clone(),
-                        optional: slot_index >= spec.min,
+                        legal_targets,
+                        optional: ability.optional_targeting,
                     });
                 }
-            } else {
-                slots.push(TargetSelectionSlot {
-                    legal_targets,
-                    optional: ability.optional_targeting,
-                });
             }
         }
     }
@@ -887,6 +907,18 @@ fn collect_target_slot_specs(
     ability: &ResolvedAbility,
     specs: &mut Vec<TargetSlotSpec>,
 ) {
+    if let Some(sub_ability) = ability.sub_ability.as_deref().filter(|sub| {
+        matches!(
+            sub.condition,
+            Some(AbilityCondition::AdditionalCostPaidInstead)
+        )
+    }) {
+        if ability.context.additional_cost_paid {
+            collect_target_slot_specs(state, sub_ability, specs);
+            return;
+        }
+    }
+
     // CR 701.12a: Mirror the ExchangeControl branch in `collect_target_slots`
     // so per-slot specs match the surfaced TargetSelectionSlots one-for-one
     // (SelfRef slots are auto-resolved and not surfaced).
@@ -925,27 +957,33 @@ fn collect_target_slot_specs(
         // CR 109.4 + CR 115.1: Companion TargetFilter::Player slot surfaced by
         // `collect_target_slots` must have a matching spec here so subsequent
         // slot recomputation treats it correctly.
-        if effect_references_target_player(&ability.effect) {
+        if ability.target_choice_timing == TargetChoiceTiming::Stack
+            && effect_references_target_player(&ability.effect)
+        {
             specs.push(TargetSlotSpec {
                 filter: TargetFilter::Player,
                 optional: ability.optional_targeting,
             });
         }
-        if let Some(filter) = triggers::extract_target_filter_from_effect(&ability.effect) {
-            if let Some(spec) = ability.multi_target.as_ref() {
-                let legal_targets = legal_targets_for_ability_filter(state, ability, filter, &[]);
-                let slot_count = multi_target_slot_count(state, ability, spec, legal_targets.len());
-                for slot_index in 0..slot_count {
+        if ability.target_choice_timing == TargetChoiceTiming::Stack {
+            if let Some(filter) = triggers::extract_target_filter_from_effect(&ability.effect) {
+                if let Some(spec) = ability.multi_target.as_ref() {
+                    let legal_targets =
+                        legal_targets_for_ability_filter(state, ability, filter, &[]);
+                    let slot_count =
+                        multi_target_slot_count(state, ability, spec, legal_targets.len());
+                    for slot_index in 0..slot_count {
+                        specs.push(TargetSlotSpec {
+                            filter: filter.clone(),
+                            optional: slot_index >= spec.min,
+                        });
+                    }
+                } else {
                     specs.push(TargetSlotSpec {
                         filter: filter.clone(),
-                        optional: slot_index >= spec.min,
+                        optional: ability.optional_targeting,
                     });
                 }
-            } else {
-                specs.push(TargetSlotSpec {
-                    filter: filter.clone(),
-                    optional: ability.optional_targeting,
-                });
             }
         }
     }
@@ -1171,8 +1209,10 @@ fn damage_any_target_legal_targets(
 fn defers_conditional_target_selection(sub: &ResolvedAbility) -> bool {
     matches!(
         &sub.condition,
-        Some(AbilityCondition::WhenYouDo) | Some(AbilityCondition::QuantityCheck { .. })
-    )
+        Some(AbilityCondition::WhenYouDo)
+            | Some(AbilityCondition::QuantityCheck { .. })
+            | Some(AbilityCondition::AdditionalCostPaidInstead)
+    ) || sub.target_choice_timing == TargetChoiceTiming::Resolution
 }
 
 fn defers_sub_ability_target_selection(effect: &Effect) -> bool {
@@ -1720,6 +1760,19 @@ fn assign_targets_recursive(
     targets: &[TargetRef],
     next_target: &mut usize,
 ) -> Result<(), EngineError> {
+    if let Some(sub_ability) = ability.sub_ability.as_mut().filter(|sub| {
+        matches!(
+            sub.condition,
+            Some(AbilityCondition::AdditionalCostPaidInstead)
+        )
+    }) {
+        if ability.context.additional_cost_paid {
+            assign_targets_recursive(state, sub_ability, targets, next_target)?;
+            ability.targets = sub_ability.targets.clone();
+            return Ok(());
+        }
+    }
+
     if let Effect::MoveCounters { source, target, .. } = &ability.effect {
         for filter in [source, target] {
             if !filter.is_context_ref() {
@@ -1737,6 +1790,9 @@ fn assign_targets_recursive(
             return Ok(());
         }
         if let Some(sub_ability) = ability.sub_ability.as_mut() {
+            if defers_conditional_target_selection(sub_ability) {
+                return Ok(());
+            }
             assign_targets_recursive(state, sub_ability, targets, next_target)?;
         }
         return Ok(());
@@ -1759,6 +1815,9 @@ fn assign_targets_recursive(
             return Ok(());
         }
         if let Some(sub_ability) = ability.sub_ability.as_mut() {
+            if defers_conditional_target_selection(sub_ability) {
+                return Ok(());
+            }
             assign_targets_recursive(state, sub_ability, targets, next_target)?;
         }
         return Ok(());
@@ -1770,7 +1829,9 @@ fn assign_targets_recursive(
     // selected player must be written onto THIS node's `targets` so the
     // filter's `TargetPlayer` resolution at runtime (filter.rs) finds it.
     // Slot order matches `collect_target_slots`: player slot before primary.
-    if effect_references_target_player(&ability.effect) {
+    if ability.target_choice_timing == TargetChoiceTiming::Stack
+        && effect_references_target_player(&ability.effect)
+    {
         if let Some(target) = targets.get(*next_target) {
             ability.targets.push(target.clone());
             *next_target += 1;
@@ -1780,7 +1841,9 @@ fn assign_targets_recursive(
             ));
         }
     }
-    if triggers::extract_target_filter_from_effect(&ability.effect).is_some() {
+    if ability.target_choice_timing == TargetChoiceTiming::Stack
+        && triggers::extract_target_filter_from_effect(&ability.effect).is_some()
+    {
         if let Some(spec) = ability.multi_target.as_ref() {
             if multi_target_max_needs_quantity_choice(state, ability, spec) {
                 return Err(EngineError::InvalidAction(
@@ -1822,6 +1885,9 @@ fn assign_targets_recursive(
         return Ok(());
     }
     if let Some(sub_ability) = ability.sub_ability.as_mut() {
+        if defers_conditional_target_selection(sub_ability) {
+            return Ok(());
+        }
         assign_targets_recursive(state, sub_ability, targets, next_target)?;
     }
     Ok(())
@@ -1832,6 +1898,19 @@ fn assign_selected_slots_recursive(
     selected_slots: &[Option<TargetRef>],
     next_slot: &mut usize,
 ) -> Result<(), EngineError> {
+    if let Some(sub_ability) = ability.sub_ability.as_mut().filter(|sub| {
+        matches!(
+            sub.condition,
+            Some(AbilityCondition::AdditionalCostPaidInstead)
+        )
+    }) {
+        if ability.context.additional_cost_paid {
+            assign_selected_slots_recursive(sub_ability, selected_slots, next_slot)?;
+            ability.targets = sub_ability.targets.clone();
+            return Ok(());
+        }
+    }
+
     if let Effect::MoveCounters { source, target, .. } = &ability.effect {
         for filter in [source, target] {
             if !filter.is_context_ref() {
@@ -1856,6 +1935,9 @@ fn assign_selected_slots_recursive(
             return Ok(());
         }
         if let Some(sub_ability) = ability.sub_ability.as_mut() {
+            if defers_conditional_target_selection(sub_ability) {
+                return Ok(());
+            }
             assign_selected_slots_recursive(sub_ability, selected_slots, next_slot)?;
         }
         return Ok(());
@@ -1885,6 +1967,9 @@ fn assign_selected_slots_recursive(
             return Ok(());
         }
         if let Some(sub_ability) = ability.sub_ability.as_mut() {
+            if defers_conditional_target_selection(sub_ability) {
+                return Ok(());
+            }
             assign_selected_slots_recursive(sub_ability, selected_slots, next_slot)?;
         }
         return Ok(());
@@ -1893,7 +1978,9 @@ fn assign_selected_slots_recursive(
     // CR 109.4 + CR 115.1: Mirror the companion-player slot pushed by
     // `collect_target_slots` for `ControllerRef::TargetPlayer` filters
     // (DamageAll, PutCounterAll, etc.). See `assign_targets_recursive`.
-    if effect_references_target_player(&ability.effect) {
+    if ability.target_choice_timing == TargetChoiceTiming::Stack
+        && effect_references_target_player(&ability.effect)
+    {
         let Some(selected_slot) = selected_slots.get(*next_slot) else {
             return Err(EngineError::InvalidAction(
                 "Missing target selection".to_string(),
@@ -1910,7 +1997,9 @@ fn assign_selected_slots_recursive(
         }
         *next_slot += 1;
     }
-    if triggers::extract_target_filter_from_effect(&ability.effect).is_some() {
+    if ability.target_choice_timing == TargetChoiceTiming::Stack
+        && triggers::extract_target_filter_from_effect(&ability.effect).is_some()
+    {
         if let Some(spec) = ability.multi_target.as_ref() {
             let remaining_minimum = ability
                 .sub_ability
@@ -1955,6 +2044,9 @@ fn assign_selected_slots_recursive(
         return Ok(());
     }
     if let Some(sub_ability) = ability.sub_ability.as_mut() {
+        if defers_conditional_target_selection(sub_ability) {
+            return Ok(());
+        }
         assign_selected_slots_recursive(sub_ability, selected_slots, next_slot)?;
     }
     Ok(())
@@ -2005,10 +2097,14 @@ fn chain_has_target_sink(ability: &ResolvedAbility) -> bool {
     // references `ControllerRef::TargetPlayer` (DamageAll, PutCounterAll,
     // etc.) — `collect_target_slots` pushes a companion player slot for it,
     // and `assign_targets_recursive` consumes one target into this node.
-    if effect_references_target_player(&ability.effect) {
+    if ability.target_choice_timing == TargetChoiceTiming::Stack
+        && effect_references_target_player(&ability.effect)
+    {
         return true;
     }
-    if triggers::extract_target_filter_from_effect(&ability.effect).is_some() {
+    if ability.target_choice_timing == TargetChoiceTiming::Stack
+        && triggers::extract_target_filter_from_effect(&ability.effect).is_some()
+    {
         return true;
     }
     if defers_sub_ability_target_selection(&ability.effect) {
@@ -2049,18 +2145,22 @@ fn minimum_targets_in_chain(ability: &ResolvedAbility) -> usize {
 
     // CR 109.4: Companion player slot for `ControllerRef::TargetPlayer` filters
     // contributes one required slot (or zero when targeting is optional).
-    let player_companion =
-        if effect_references_target_player(&ability.effect) && !ability.optional_targeting {
-            1
-        } else {
-            0
-        };
+    let player_companion = if ability.target_choice_timing == TargetChoiceTiming::Stack
+        && effect_references_target_player(&ability.effect)
+        && !ability.optional_targeting
+    {
+        1
+    } else {
+        0
+    };
     let current = if matches!(
         &ability.effect,
         Effect::Attach { .. } | Effect::MoveCounters { .. }
     ) {
         0
-    } else if triggers::extract_target_filter_from_effect(&ability.effect).is_some() {
+    } else if ability.target_choice_timing == TargetChoiceTiming::Stack
+        && triggers::extract_target_filter_from_effect(&ability.effect).is_some()
+    {
         if let Some(spec) = ability
             .multi_target
             .as_ref()
@@ -2190,9 +2290,9 @@ mod tests {
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{
-        AbilityKind, CounterTransferMode, Duration, Effect, ModalChoice, ModalSelectionConstraint,
-        PtValue, QuantityExpr, QuantityRef, TargetFilter, TypeFilter, TypedFilter, UnlessCost,
-        UnlessPayModifier,
+        AbilityKind, CounterTransferMode, Duration, Effect, FilterProp, ModalChoice,
+        ModalSelectionConstraint, PtValue, QuantityExpr, QuantityRef, TargetFilter, TypeFilter,
+        TypedFilter, UnlessCost, UnlessPayModifier,
     };
     use crate::types::card_type::CoreType;
     use crate::types::game_state::{GameState, TargetSelectionConstraint, TargetSelectionSlot};
@@ -2496,6 +2596,112 @@ mod tests {
         let slots = build_target_slots(&state, &ability).expect("target slots should build");
         assert_eq!(slots.len(), 1);
         assert_eq!(slots[0].legal_targets, vec![TargetRef::Player(PlayerId(1))]);
+    }
+
+    #[test]
+    fn resolution_timed_zone_sub_ability_defers_target_choice_to_resolution() {
+        for (origin, filter) in [
+            (
+                Zone::Graveyard,
+                TargetFilter::Typed(TypedFilter::new(TypeFilter::Land)),
+            ),
+            (
+                Zone::Exile,
+                TargetFilter::Typed(TypedFilter::new(TypeFilter::Artifact)),
+            ),
+        ] {
+            let mut ability = ResolvedAbility::new(
+                Effect::Mill {
+                    count: QuantityExpr::Fixed { value: 3 },
+                    target: TargetFilter::Controller,
+                    destination: Zone::Graveyard,
+                },
+                vec![],
+                ObjectId(1),
+                PlayerId(0),
+            );
+            let mut sub = ResolvedAbility::new(
+                Effect::ChangeZone {
+                    origin: Some(origin),
+                    destination: Zone::Battlefield,
+                    target: filter,
+                    owner_library: false,
+                    enter_transformed: false,
+                    under_your_control: false,
+                    enter_tapped: true,
+                    enters_attacking: false,
+                    up_to: false,
+                    enter_with_counters: vec![],
+                },
+                vec![],
+                ObjectId(1),
+                PlayerId(0),
+            );
+            sub.optional = true;
+            sub.target_choice_timing = TargetChoiceTiming::Resolution;
+            ability.sub_ability = Some(Box::new(sub));
+
+            let state = GameState::new_two_player(42);
+            let slots = build_target_slots(&state, &ability).expect("target slots should build");
+
+            assert!(
+                slots.is_empty(),
+                "optional {origin:?} zone choice should happen at resolution"
+            );
+        }
+    }
+
+    #[test]
+    fn root_graveyard_target_still_uses_stack_targeting() {
+        let mut state = GameState::new_two_player(42);
+        let artifact_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Artifact".to_string(),
+            Zone::Graveyard,
+        );
+        state
+            .objects
+            .get_mut(&artifact_id)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Artifact);
+        state
+            .objects
+            .get_mut(&artifact_id)
+            .unwrap()
+            .base_card_types
+            .core_types
+            .push(CoreType::Artifact);
+        let mut ability = ResolvedAbility::new(
+            Effect::ChangeZone {
+                origin: Some(Zone::Graveyard),
+                destination: Zone::Battlefield,
+                target: TargetFilter::Typed(TypedFilter::new(TypeFilter::Artifact).properties(
+                    vec![FilterProp::InZone {
+                        zone: Zone::Graveyard,
+                    }],
+                )),
+                owner_library: false,
+                enter_transformed: false,
+                under_your_control: false,
+                enter_tapped: false,
+                enters_attacking: false,
+                up_to: false,
+                enter_with_counters: vec![],
+            },
+            vec![],
+            ObjectId(2),
+            PlayerId(0),
+        );
+        ability.optional = true;
+
+        let slots = build_target_slots(&state, &ability).expect("target slots should build");
+
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].legal_targets, vec![TargetRef::Object(artifact_id)]);
     }
 
     #[test]

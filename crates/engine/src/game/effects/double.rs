@@ -293,6 +293,7 @@ mod tests {
             optional: false,
             optional_for: None,
             multi_target: None,
+            target_choice_timing: crate::types::ability::TargetChoiceTiming::Stack,
             description: None,
             repeat_for: None,
             forward_result: false,
