@@ -2374,18 +2374,29 @@ pub enum QuantityRef {
         to: Option<Zone>,
         filter: TargetFilter,
     },
-    /// CR 120.1 + CR 603.4: Greatest total damage dealt this turn by any one
-    /// source controlled by the referenced player. Used by intervening-if
-    /// phrases such as "if a source you controlled dealt 5 or more damage this
-    /// turn"; damage from multiple sources is not combined.
-    MaxDamageDealtThisTurnBySourceControlledBy { controller: ControllerRef },
-    /// CR 120.1 + CR 603.4: Total damage dealt this turn matching a source
-    /// object filter and a recipient filter. Used by intervening-if clauses
-    /// such as "if this creature dealt damage to an opponent this turn" and
-    /// "if this creature was dealt damage this turn".
+    /// CR 120.1 + CR 120.9 + CR 603.4: Damage dealt this turn matching a source
+    /// object filter and a recipient filter, optionally grouped by a key
+    /// (CR 120.9 "specific source") and aggregated.
+    ///
+    /// `group_by: None` sums every matching record's `amount`.
+    /// `group_by: Some(SourceId)` partitions matching records by `record.source_id`,
+    /// sums each partition, then applies `aggregate` across the per-group sums
+    /// (Max picks the largest single source's contribution; Sum equals the
+    /// ungrouped sum; Min picks the smallest).
+    ///
+    /// Used by intervening-if clauses such as "if this creature dealt damage to
+    /// an opponent this turn", "if this creature was dealt damage this turn",
+    /// and "if a source you controlled dealt 5 or more damage this turn".
     DamageDealtThisTurn {
         source: Box<TargetFilter>,
         target: Box<TargetFilter>,
+        #[serde(
+            default = "default_damage_aggregate",
+            skip_serializing_if = "is_default_damage_aggregate"
+        )]
+        aggregate: AggregateFunction,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group_by: Option<DamageGroupKey>,
     },
     /// A number chosen as the source entered the battlefield (e.g., Talion, the Kindly Lord).
     /// Resolved from the source object's `ChosenAttribute::Number`.
@@ -2491,6 +2502,18 @@ pub enum AggregateFunction {
     Max,
     Min,
     Sum,
+}
+
+/// CR 120.9: Grouping key for damage-history aggregation. CR 120.9 distinguishes
+/// damage dealt "by a specific source" from damage in the aggregate, so any
+/// query that needs per-source partitioning before aggregation must select a
+/// key here. Today only `SourceId` is needed; future axes (e.g., per-target)
+/// fit cleanly as additional variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DamageGroupKey {
+    /// CR 120.9: Group records by `DamageRecord::source_id` so the resolver can
+    /// answer "the most damage dealt by any single source."
+    SourceId,
 }
 
 /// A measurable property of a game object for aggregate queries.
@@ -5061,6 +5084,14 @@ fn default_quantity_four() -> QuantityExpr {
 
 fn default_counter_transfer_mode() -> CounterTransferMode {
     CounterTransferMode::Move
+}
+
+fn default_damage_aggregate() -> AggregateFunction {
+    AggregateFunction::Sum
+}
+
+fn is_default_damage_aggregate(a: &AggregateFunction) -> bool {
+    matches!(a, AggregateFunction::Sum)
 }
 
 fn is_default_search_selection_constraint(c: &SearchSelectionConstraint) -> bool {

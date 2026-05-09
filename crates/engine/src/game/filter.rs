@@ -2123,8 +2123,16 @@ fn matches_filter_prop(
                 }
             }
         }
-        // CR 510.1: Object was dealt damage this turn (damage_marked persists until cleanup).
-        FilterProp::WasDealtDamageThisTurn => obj.damage_marked > 0,
+        // CR 120.6 + CR 120.9: "Was dealt damage this turn" is a historical fact,
+        // not a query against current marked damage. CR 120.6 removes marked damage
+        // when a permanent regenerates and during the cleanup step, so reading
+        // `damage_marked` would silently lose the fact for any creature that had
+        // regenerated. The damage-event history (CR 120.9 establishes "dealt damage"
+        // as the per-source historical record) is the authoritative source.
+        FilterProp::WasDealtDamageThisTurn => state
+            .damage_dealt_this_turn
+            .iter()
+            .any(|record| matches!(record.target, TargetRef::Object(id) if id == object_id)),
         // CR 400.7: Object entered the battlefield this turn.
         FilterProp::EnteredThisTurn => obj.entered_battlefield_turn == Some(state.turn_number),
         FilterProp::ZoneChangedThisTurn { from, to } => {
@@ -3079,6 +3087,47 @@ mod tests {
             },
         ]));
         assert!(matches_target_filter(&state, bird, &filter, bird));
+    }
+
+    /// CR 120.6 + CR 120.9 (audit H2): "Was dealt damage this turn" must consult
+    /// the damage-event history, not `damage_marked`. Per CR 120.6 marked damage
+    /// is removed when the permanent regenerates, but the historical fact (CR 120.9)
+    /// survives — so a creature that was dealt damage and then regenerated must
+    /// still be a legal target for "destroy target creature that was dealt damage
+    /// this turn" (Fatal Blow). The pre-fix implementation read `damage_marked`
+    /// and silently lost the fact.
+    #[test]
+    fn was_dealt_damage_this_turn_survives_regeneration() {
+        use crate::types::game_state::DamageRecord;
+
+        let mut state = setup();
+        let creature = add_creature(&mut state, PlayerId(0), "Wall of Resistance");
+        let damage_source = add_creature(&mut state, PlayerId(1), "Goblin Piker");
+
+        // Push the historical record, then simulate regeneration (CR 120.6:
+        // "All damage marked on a permanent is removed when it regenerates").
+        state.damage_dealt_this_turn.push(DamageRecord {
+            source_id: damage_source,
+            source_controller: PlayerId(1),
+            target: TargetRef::Object(creature),
+            amount: 2,
+            is_combat: true,
+        });
+        state.objects.get_mut(&creature).unwrap().damage_marked = 0;
+
+        let filter = TargetFilter::Typed(
+            TypedFilter::creature().properties(vec![FilterProp::WasDealtDamageThisTurn]),
+        );
+        assert!(
+            matches_target_filter(&state, creature, &filter, creature),
+            "Fatal Blow target must remain legal after the creature regenerates"
+        );
+
+        // Negative control: an undamaged creature does not match.
+        let untouched = add_creature(&mut state, PlayerId(0), "Grizzly Bears");
+        assert!(!matches_target_filter(
+            &state, untouched, &filter, untouched
+        ));
     }
 
     #[test]

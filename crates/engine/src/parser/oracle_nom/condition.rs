@@ -16,7 +16,7 @@ use super::quantity as nom_quantity;
 use crate::parser::oracle_target::{parse_type_phrase, parse_zone_suffix};
 use crate::types::ability::{
     AggregateFunction, CastManaObjectScope, CastManaSpentMetric, Comparator, ControllerRef,
-    CountScope, FilterProp, ObjectProperty, PlayerScope, QuantityExpr, QuantityRef,
+    CountScope, DamageGroupKey, FilterProp, ObjectProperty, PlayerScope, QuantityExpr, QuantityRef,
     StaticCondition, TargetFilter, TypeFilter, TypedFilter, ZoneRef,
 };
 use crate::types::counter::{CounterMatch, CounterType};
@@ -114,6 +114,8 @@ fn parse_source_dealt_damage_to_opponent_this_turn(
             QuantityRef::DamageDealtThisTurn {
                 source: Box::new(TargetFilter::SelfRef),
                 target: Box::new(target),
+                aggregate: AggregateFunction::Sum,
+                group_by: None,
             },
             1,
         ),
@@ -129,6 +131,8 @@ fn parse_source_was_dealt_damage_this_turn(input: &str) -> OracleResult<'_, Stat
             QuantityRef::DamageDealtThisTurn {
                 source: Box::new(TargetFilter::Any),
                 target: Box::new(TargetFilter::SelfRef),
+                aggregate: AggregateFunction::Sum,
+                group_by: None,
             },
             1,
         ),
@@ -1688,10 +1692,20 @@ fn parse_source_damage_threshold_this_turn(input: &str) -> OracleResult<'_, Stat
     let (rest, amount) = parse_number(rest)?;
     let (rest, _) = tag(" or more damage this turn").parse(rest)?;
 
+    // CR 120.9: "by a specific source controlled by X" — group damage records
+    // by source id then take the max per-source sum (matches "any one source"
+    // wording; damage from multiple sources is not combined).
     Ok((
         rest,
         make_quantity_ge(
-            QuantityRef::MaxDamageDealtThisTurnBySourceControlledBy { controller },
+            QuantityRef::DamageDealtThisTurn {
+                source: Box::new(TargetFilter::Typed(
+                    TypedFilter::default().controller(controller),
+                )),
+                target: Box::new(TargetFilter::Any),
+                aggregate: AggregateFunction::Max,
+                group_by: Some(DamageGroupKey::SourceId),
+            },
             amount,
         ),
     ))
@@ -6021,13 +6035,22 @@ mod tests {
                 lhs:
                     QuantityExpr::Ref {
                         qty:
-                            QuantityRef::MaxDamageDealtThisTurnBySourceControlledBy {
-                                controller: ControllerRef::You,
+                            QuantityRef::DamageDealtThisTurn {
+                                source,
+                                target,
+                                aggregate: AggregateFunction::Max,
+                                group_by: Some(DamageGroupKey::SourceId),
                             },
                     },
                 comparator: Comparator::GE,
                 rhs: QuantityExpr::Fixed { value: 5 },
-            } => {}
+            } => {
+                let TargetFilter::Typed(typed) = *source else {
+                    panic!("expected typed source filter");
+                };
+                assert_eq!(typed.controller, Some(ControllerRef::You));
+                assert_eq!(*target, TargetFilter::Any);
+            }
             other => panic!("expected source-damage threshold quantity, got {other:?}"),
         }
     }
@@ -6041,7 +6064,13 @@ mod tests {
             StaticCondition::QuantityComparison {
                 lhs:
                     QuantityExpr::Ref {
-                        qty: QuantityRef::DamageDealtThisTurn { source, target },
+                        qty:
+                            QuantityRef::DamageDealtThisTurn {
+                                source,
+                                target,
+                                aggregate: AggregateFunction::Sum,
+                                group_by: None,
+                            },
                     },
                 comparator: Comparator::GE,
                 rhs: QuantityExpr::Fixed { value: 1 },
@@ -6067,6 +6096,8 @@ mod tests {
                     qty: QuantityRef::DamageDealtThisTurn {
                         source,
                         target,
+                        aggregate: AggregateFunction::Sum,
+                        group_by: None,
                     },
                 },
                 comparator: Comparator::GE,

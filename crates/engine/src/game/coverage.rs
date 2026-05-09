@@ -906,12 +906,19 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
                 fmt_target(filter)
             )
         }
-        QuantityRef::MaxDamageDealtThisTurnBySourceControlledBy { controller } => {
-            format!("max damage this turn by {controller:?} source")
-        }
-        QuantityRef::DamageDealtThisTurn { source, target } => {
+        QuantityRef::DamageDealtThisTurn {
+            source,
+            target,
+            aggregate,
+            group_by,
+        } => {
+            let group = match group_by {
+                None => "ungrouped".to_string(),
+                Some(crate::types::ability::DamageGroupKey::SourceId) => "by-source".to_string(),
+            };
             format!(
-                "damage dealt this turn ({} -> {})",
+                "{} damage dealt this turn ({} -> {}) [{group}]",
+                fmt_aggregate_function(*aggregate),
                 fmt_target(source),
                 fmt_target(target)
             )
@@ -4754,9 +4761,6 @@ fn quantity_ref_feature(qref: &QuantityRef) -> (&'static str, FeatureSupport) {
         QuantityRef::LifeGainedThisTurn { .. } => ("LifeGainedThisTurn", Handled),
         QuantityRef::CardsDrawnThisTurn { .. } => ("CardsDrawnThisTurn", Handled),
         QuantityRef::ZoneChangeCountThisTurn { .. } => ("ZoneChangeCountThisTurn", Handled),
-        QuantityRef::MaxDamageDealtThisTurnBySourceControlledBy { .. } => {
-            ("MaxDamageDealtThisTurnBySourceControlledBy", Handled)
-        }
         QuantityRef::DamageDealtThisTurn { .. } => ("DamageDealtThisTurn", Handled),
         QuantityRef::TurnsTaken => ("TurnsTaken", Unhandled),
         QuantityRef::ChosenNumber => ("ChosenNumber", Unhandled),

@@ -3140,7 +3140,7 @@ pub(crate) fn attachment_kinds_filter_prop(
 ///
 /// Handles multiple pattern classes:
 /// - "that share(s) [a] [quality]" → `SharesQuality`
-/// - CR 510.1: "that was dealt damage this turn" → `WasDealtDamageThisTurn`
+/// - CR 120.6 + CR 120.9: "that was dealt damage this turn" → `WasDealtDamageThisTurn`
 /// - CR 400.7: "that entered (the battlefield) this turn" → `EnteredThisTurn`
 /// - CR 508.1a: "that attacked this turn" → `AttackedThisTurn`
 /// - CR 509.1a: "that blocked this turn" → `BlockedThisTurn`
@@ -3214,7 +3214,7 @@ pub(crate) fn parse_that_clause_suffix(text: &str) -> Option<(Vec<FilterProp>, u
     }
 
     // --- Verb-phrase patterns: match fixed phrases after "that " ---
-    // CR 510.1: "that was dealt damage this turn"
+    // CR 120.6 + CR 120.9: "that was dealt damage this turn"
     static VERB_PHRASES: &[(&str, FilterProp)] = &[
         (
             "was dealt damage this turn",

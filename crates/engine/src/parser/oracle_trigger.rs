@@ -8575,6 +8575,7 @@ mod tests {
                     qty: QuantityRef::DamageDealtThisTurn {
                         source,
                         target,
+                        ..
                     },
                 },
                 comparator: Comparator::GE,
