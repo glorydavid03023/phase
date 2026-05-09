@@ -77,6 +77,7 @@ fn parse_event_history_conditions(input: &str) -> OracleResult<'_, StaticConditi
     alt((
         parse_damage_dealt_this_turn_conditions,
         parse_source_damage_threshold_this_turn,
+        parse_source_didnt_this_turn,
         parse_entered_this_turn,
         parse_opponent_cast_spell_this_turn,
         parse_youve_this_turn,
@@ -2748,6 +2749,38 @@ fn parse_you_didnt_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
         ),
     ))
     .parse(rest)
+}
+
+fn parse_source_didnt_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = alt((tag("~ didn't "), tag("this creature didn't "))).parse(input)?;
+    alt((
+        value(
+            make_source_history_absence(FilterProp::AttackedThisTurn),
+            tag("attack this turn"),
+        ),
+        value(
+            make_source_history_absence(FilterProp::EnteredThisTurn),
+            tag("enter the battlefield this turn"),
+        ),
+    ))
+    .parse(rest)
+}
+
+fn make_source_history_absence(prop: FilterProp) -> StaticCondition {
+    StaticCondition::QuantityComparison {
+        lhs: QuantityExpr::Ref {
+            qty: QuantityRef::ObjectCount {
+                filter: TargetFilter::And {
+                    filters: vec![
+                        TargetFilter::SelfRef,
+                        TargetFilter::Typed(TypedFilter::default().properties(vec![prop])),
+                    ],
+                },
+            },
+        },
+        comparator: Comparator::EQ,
+        rhs: QuantityExpr::Fixed { value: 0 },
+    }
 }
 
 /// Parse "no [type] are on the battlefield" → ObjectCount EQ 0.
@@ -5628,6 +5661,46 @@ mod tests {
                 assert_eq!(rhs, QuantityExpr::Fixed { value: 0 });
             }
             _ => panic!("expected QuantityComparison, got {c:?}"),
+        }
+    }
+
+    #[test]
+    fn source_didnt_attack_this_turn_counts_self_with_history_filter() {
+        let (rest, c) = parse_inner_condition("~ didn't attack this turn").unwrap();
+        assert_eq!(rest, "");
+        assert_source_history_absence(c, FilterProp::AttackedThisTurn);
+    }
+
+    #[test]
+    fn source_didnt_enter_this_turn_counts_self_with_history_filter() {
+        let (rest, c) =
+            parse_inner_condition("this creature didn't enter the battlefield this turn").unwrap();
+        assert_eq!(rest, "");
+        assert_source_history_absence(c, FilterProp::EnteredThisTurn);
+    }
+
+    fn assert_source_history_absence(c: StaticCondition, prop: FilterProp) {
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::ObjectCount {
+                                filter: TargetFilter::And { filters },
+                            },
+                    },
+                comparator: Comparator::EQ,
+                rhs: QuantityExpr::Fixed { value: 0 },
+            } => {
+                assert!(filters
+                    .iter()
+                    .any(|filter| matches!(filter, TargetFilter::SelfRef)));
+                assert!(filters.iter().any(|filter| matches!(
+                    filter,
+                    TargetFilter::Typed(TypedFilter { properties, .. }) if properties.contains(&prop)
+                )));
+            }
+            other => panic!("expected source history absence condition, got {other:?}"),
         }
     }
 

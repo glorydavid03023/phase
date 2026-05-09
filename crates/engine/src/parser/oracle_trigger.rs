@@ -6351,6 +6351,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn trigger_intervening_if_source_didnt_attack_this_turn_attaches_condition() {
+        let def = parse_trigger_line(
+            "At the beginning of your end step, if this creature didn't attack this turn, put a +1/+1 counter on it.",
+            "Air Nomad Student",
+        );
+        assert!(matches!(
+            def.condition,
+            Some(TriggerCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::ObjectCount {
+                        filter: TargetFilter::And { .. },
+                    },
+                },
+                comparator: Comparator::EQ,
+                rhs: QuantityExpr::Fixed { value: 0 },
+            })
+        ));
+    }
+
     // CR 603.6a + CR 611.2b: "Whenever a permanent you control enters tapped, ..." —
     // Amulet of Vigor class. The `enters tapped` rider must set
     // `SourceIsTapped` (fires only when entering tapped).
