@@ -128,6 +128,9 @@ pub fn build_static_registry() -> HashMap<StaticMode, StaticAbilityHandler> {
     registry.insert(StaticMode::CantUntap, handle_rule_mod);
     // CR 509.1c: MustBeBlocked — this creature must be blocked if able.
     registry.insert(StaticMode::MustBeBlocked, handle_rule_mod);
+    // CR 701.15b: Goaded — this creature must attack and avoid the goading
+    // player if able. Runtime enforcement lives in combat.rs.
+    registry.insert(StaticMode::Goaded, handle_rule_mod);
     registry.insert(StaticMode::CantAttackAlone, handle_rule_mod);
     registry.insert(StaticMode::CantBlockAlone, handle_rule_mod);
     registry.insert(StaticMode::MayLookAtTopOfLibrary, handle_rule_mod);

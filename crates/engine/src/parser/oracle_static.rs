@@ -303,6 +303,7 @@ enum RuleStaticPredicate {
     MustAttack,
     MustBlock,
     MustBeBlocked,
+    Goaded,
     BlockOnlyCreaturesWithFlying,
     Shroud,
     Hexproof,
@@ -2210,10 +2211,7 @@ fn try_split_and_must_attack_block(text: &str) -> Option<Vec<StaticDefinition>> 
         ))
         .parse(i)
     })?;
-    if !rest.trim().trim_end_matches('.').is_empty() {
-        return None;
-    }
-
+    let tail_predicates = parse_rule_static_tail_predicates(rest)?;
     let cut_end = before
         .trim_end_matches(|ch: char| ch == ',' || ch.is_whitespace())
         .len();
@@ -2233,6 +2231,13 @@ fn try_split_and_must_attack_block(text: &str) -> Option<Vec<StaticDefinition>> 
         let mut companion = StaticDefinition::new(mode)
             .affected(affected.clone())
             .description(text.to_string());
+        if let Some(condition) = condition.clone() {
+            companion = companion.condition(condition);
+        }
+        defs.push(companion);
+    }
+    for predicate in tail_predicates {
+        let mut companion = lower_rule_static(predicate, affected.clone(), text);
         if let Some(condition) = condition.clone() {
             companion = companion.condition(condition);
         }
@@ -4687,8 +4692,28 @@ fn parse_combat_rule_static_predicate_nom(input: &str) -> OracleResult<'_, RuleS
                 tag("must be blocked if able"),
             )),
         ),
+        value(
+            RuleStaticPredicate::Goaded,
+            alt((tag("is goaded"), tag("are goaded"))),
+        ),
     ))
     .parse(input)
+}
+
+fn parse_rule_static_tail_predicates(rest: &str) -> Option<Vec<RuleStaticPredicate>> {
+    let mut remaining = rest;
+    let mut predicates = Vec::new();
+
+    loop {
+        let trimmed = remaining.trim();
+        if trimmed.is_empty() || trimmed == "." {
+            return Some(predicates);
+        }
+        let (after_separator, _) = parse_rule_static_separator_nom(trimmed).ok()?;
+        let (after_predicate, predicate) = parse_rule_static_predicate_nom(after_separator).ok()?;
+        predicates.push(predicate);
+        remaining = after_predicate;
+    }
 }
 
 fn parse_cant_attack_rule_static_predicate_nom(
@@ -4731,6 +4756,9 @@ fn lower_rule_static(
             .affected(affected)
             .description(description.to_string()),
         RuleStaticPredicate::MustBeBlocked => StaticDefinition::new(StaticMode::MustBeBlocked)
+            .affected(affected)
+            .description(description.to_string()),
+        RuleStaticPredicate::Goaded => StaticDefinition::new(StaticMode::Goaded)
             .affected(affected)
             .description(description.to_string()),
         RuleStaticPredicate::BlockOnlyCreaturesWithFlying => {
@@ -10060,6 +10088,25 @@ mod tests {
             .contains(&ContinuousModification::AddToughness { value: 3 }));
         assert_eq!(defs[1].mode, StaticMode::MustBeBlocked);
         assert_eq!(defs[1].affected, defs[0].affected);
+    }
+
+    #[test]
+    fn static_pump_must_be_blocked_and_goaded_emits_all_defs() {
+        let defs = parse_static_line_multi(
+            "Enchanted creature gets +3/+3, must be blocked if able, and is goaded.",
+        );
+        assert_eq!(defs.len(), 3);
+        assert_eq!(defs[0].mode, StaticMode::Continuous);
+        assert!(defs[0]
+            .modifications
+            .contains(&ContinuousModification::AddPower { value: 3 }));
+        assert!(defs[0]
+            .modifications
+            .contains(&ContinuousModification::AddToughness { value: 3 }));
+        assert_eq!(defs[1].mode, StaticMode::MustBeBlocked);
+        assert_eq!(defs[2].mode, StaticMode::Goaded);
+        assert_eq!(defs[1].affected, defs[0].affected);
+        assert_eq!(defs[2].affected, defs[0].affected);
     }
 
     #[test]
