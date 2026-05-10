@@ -46,6 +46,7 @@ function createGameState(overrides: Partial<GameState> = {}): GameState {
       commander_damage_threshold: null,
       range_of_influence: null,
       team_based: false,
+      uses_commander: false,
     },
     eliminated_players: [],
     ...overrides,

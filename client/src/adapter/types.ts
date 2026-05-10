@@ -46,6 +46,13 @@ export interface FormatConfig {
   commander_damage_threshold: number | null;
   range_of_influence: number | null;
   team_based: boolean;
+  /**
+   * Engine-derived predicate: true when the format uses a commander card
+   * and the commander-damage state-based action (CR 903.10a / CR 704.5u).
+   * The frontend must consume this directly rather than re-listing
+   * commander-style format strings client-side.
+   */
+  uses_commander: boolean;
 }
 
 /**

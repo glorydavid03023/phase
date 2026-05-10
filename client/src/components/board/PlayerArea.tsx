@@ -81,7 +81,7 @@ export function PlayerArea({
   }
 
   const player = gameState.players[playerId];
-  const isCommander = gameState.format_config?.format === "Commander";
+  const isCommander = gameState.format_config?.uses_commander === true;
   const isEliminated = player?.is_eliminated ?? false;
   // CR 702.26-style player phasing: while phased out, dim the player area
   // to mirror the engine-side exclusion (targeting/damage/attack/SBA). Use

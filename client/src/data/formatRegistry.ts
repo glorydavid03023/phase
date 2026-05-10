@@ -23,6 +23,7 @@ export const FORMAT_REGISTRY: readonly FormatMetadata[] = [
       commander_damage_threshold: null,
       range_of_influence: null,
       team_based: false,
+      uses_commander: false,
     },
   },
   {
@@ -42,6 +43,7 @@ export const FORMAT_REGISTRY: readonly FormatMetadata[] = [
       commander_damage_threshold: null,
       range_of_influence: null,
       team_based: false,
+      uses_commander: false,
     },
   },
   {
@@ -61,6 +63,7 @@ export const FORMAT_REGISTRY: readonly FormatMetadata[] = [
       commander_damage_threshold: null,
       range_of_influence: null,
       team_based: false,
+      uses_commander: false,
     },
   },
   {
@@ -80,6 +83,7 @@ export const FORMAT_REGISTRY: readonly FormatMetadata[] = [
       commander_damage_threshold: null,
       range_of_influence: null,
       team_based: false,
+      uses_commander: false,
     },
   },
   {
@@ -99,6 +103,7 @@ export const FORMAT_REGISTRY: readonly FormatMetadata[] = [
       commander_damage_threshold: null,
       range_of_influence: null,
       team_based: false,
+      uses_commander: false,
     },
   },
   {
@@ -118,6 +123,7 @@ export const FORMAT_REGISTRY: readonly FormatMetadata[] = [
       commander_damage_threshold: null,
       range_of_influence: null,
       team_based: false,
+      uses_commander: false,
     },
   },
   {
@@ -137,6 +143,7 @@ export const FORMAT_REGISTRY: readonly FormatMetadata[] = [
       commander_damage_threshold: null,
       range_of_influence: null,
       team_based: false,
+      uses_commander: false,
     },
   },
   {
@@ -156,6 +163,7 @@ export const FORMAT_REGISTRY: readonly FormatMetadata[] = [
       commander_damage_threshold: null,
       range_of_influence: null,
       team_based: false,
+      uses_commander: false,
     },
   },
   {
@@ -175,6 +183,7 @@ export const FORMAT_REGISTRY: readonly FormatMetadata[] = [
       commander_damage_threshold: 21,
       range_of_influence: null,
       team_based: false,
+      uses_commander: true,
     },
   },
   {
@@ -194,6 +203,7 @@ export const FORMAT_REGISTRY: readonly FormatMetadata[] = [
       commander_damage_threshold: 21,
       range_of_influence: null,
       team_based: false,
+      uses_commander: true,
     },
   },
   {
@@ -213,6 +223,7 @@ export const FORMAT_REGISTRY: readonly FormatMetadata[] = [
       commander_damage_threshold: 21,
       range_of_influence: null,
       team_based: false,
+      uses_commander: true,
     },
   },
   {
@@ -232,6 +243,7 @@ export const FORMAT_REGISTRY: readonly FormatMetadata[] = [
       commander_damage_threshold: 21,
       range_of_influence: null,
       team_based: false,
+      uses_commander: true,
     },
   },
   {
@@ -251,6 +263,7 @@ export const FORMAT_REGISTRY: readonly FormatMetadata[] = [
       commander_damage_threshold: 21,
       range_of_influence: null,
       team_based: false,
+      uses_commander: true,
     },
   },
   {
@@ -270,6 +283,7 @@ export const FORMAT_REGISTRY: readonly FormatMetadata[] = [
       commander_damage_threshold: null,
       range_of_influence: null,
       team_based: false,
+      uses_commander: false,
     },
   },
 ];
@@ -291,6 +305,7 @@ export const LIMITED_FORMAT_CONFIG: FormatMetadata = {
     commander_damage_threshold: null,
     range_of_influence: null,
     team_based: false,
+    uses_commander: false,
   },
 };
 
