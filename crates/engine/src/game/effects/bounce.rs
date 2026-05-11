@@ -18,50 +18,63 @@ fn filter_uses_scoped_player(filter: &TargetFilter) -> bool {
     }
 }
 
-/// CR 400.6: Zone change — permanent moves from battlefield to its owner's hand.
+/// CR 400.6: Zone change — return target object to the destination zone
+/// (default: its owner's hand).
 ///
 /// Also handles LTB self-return triggers (CR 603.10) such as Rancor: when the
 /// trigger resolves, the source is already in its owner's graveyard, so the
 /// resolver must accept graveyard as a valid from-zone in addition to the
 /// battlefield.
+///
+/// Honors `Effect::Bounce.destination` symmetrically with `BounceAll` below.
+/// Today's parser always emits `destination: None` (the canonical "return ...
+/// to ... hand" Oracle phrasing); the explicit unwrap default keeps the field
+/// meaningful so future parser branches that target other zones (e.g., library
+/// top) don't need a separate resolver. CR 608.2c makes the printed destination
+/// part of the effect's instructions — silently ignoring a non-null destination
+/// would be a rules bug.
 pub fn resolve(
     state: &mut GameState,
     ability: &ResolvedAbility,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
-    // Determine targets using typed Effect::Bounce target field.
-    // CR 608.2c + 603.10: An anaphoric "it" in a top-level trigger effect (e.g.,
-    // Rancor's "return it to its owner's hand") has no parent target to inherit
-    // from — it refers to the source object itself. `SelfRef` collapses to the
-    // same thing. `TriggeringSource` is deliberately excluded: it resolves via
-    // `state.current_trigger_event`, and conflating it with the ability source
-    // would be wrong for "Whenever a creature dies, return it ..." patterns
-    // where the source is the ability's host, not the triggering object.
-    let use_self = match &ability.effect {
-        Effect::Bounce { target, .. } => {
-            matches!(
-                target,
-                TargetFilter::None | TargetFilter::SelfRef | TargetFilter::ParentTarget
-            ) && ability.targets.is_empty()
-        }
-        _ => false,
+    // CR 608.2c + 603.10: Delegate target resolution to the unified
+    // 3-tier dispatch (`resolved_targets`) so this resolver picks up the
+    // same self-ref / event-context / chosen-targets handling that ChangeZone
+    // and other zone-change resolvers use. `resolved_targets` short-circuits
+    // `SelfRef` to `ability.source_id` regardless of `ability.targets` — this
+    // is what makes chained "Exile ~"-style sub-abilities (Treasured Find,
+    // Arc Blade, etc.) target the source object rather than inheriting the
+    // parent's chosen targets via the chain target-propagation in
+    // `effects::mod.rs`.
+    let (target_filter, destination) = match &ability.effect {
+        Effect::Bounce {
+            target,
+            destination,
+        } => (
+            target,
+            // CR 608.2c: Default to owner's hand — mirrors `BounceAll`'s
+            // `destination.unwrap_or(Zone::Hand)` and the canonical Oracle
+            // phrasing "return ... to ... hand". Honoring the field makes
+            // `Effect::Bounce` symmetric with `Effect::BounceAll` so future
+            // parser branches that route through `Bounce` with non-`Hand`
+            // destinations don't need a separate resolver.
+            destination.unwrap_or(Zone::Hand),
+        ),
+        _ => (&TargetFilter::None, Zone::Hand),
     };
 
-    let targets: Vec<_> = if use_self {
-        vec![ability.source_id]
-    } else {
-        ability
-            .targets
-            .iter()
-            .filter_map(|t| {
-                if let TargetRef::Object(id) = t {
-                    Some(*id)
-                } else {
-                    None
-                }
-            })
-            .collect()
-    };
+    let effective_targets = crate::game::targeting::resolved_targets(ability, target_filter, state);
+    let targets: Vec<_> = effective_targets
+        .iter()
+        .filter_map(|t| {
+            if let TargetRef::Object(id) = t {
+                Some(*id)
+            } else {
+                None
+            }
+        })
+        .collect();
 
     for obj_id in targets {
         // CR 114.5: Emblems cannot be bounced
@@ -70,12 +83,13 @@ pub fn resolve(
         }
 
         // CR 400.3 + CR 603.10: Bounce moves the object from its current zone to
-        // its owner's hand. Battlefield is the usual case; graveyard covers LTB
-        // self-return triggers (Rancor class) where the source has already moved
-        // to the graveyard by the time the trigger resolves.
+        // the destination zone. Battlefield is the usual case; graveyard covers
+        // both LTB self-return triggers (Rancor class) and explicit
+        // graveyard-targeted return spells (Treasured Find class — `Card` typed
+        // filter scoped to graveyard via `InZone` property).
         let current_zone = state.objects.get(&obj_id).map(|o| o.zone);
         if matches!(current_zone, Some(Zone::Battlefield | Zone::Graveyard)) {
-            zones::move_to_zone(state, obj_id, Zone::Hand, events);
+            zones::move_to_zone(state, obj_id, destination, events);
         }
     }
 
@@ -310,6 +324,74 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    /// CR 608.2c: Single-target `Bounce` honors `destination`, mirroring
+    /// `BounceAll`. `Some(Zone::Library)` covers hypothetical "return target
+    /// creature to the top of its owner's library" patterns; the resolver
+    /// shape is destination-agnostic so future parser branches can route
+    /// through it without forking the resolver.
+    #[test]
+    fn test_bounce_destination_override_routes_to_specified_zone() {
+        let mut state = GameState::new_two_player(42);
+        let obj_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Bear".to_string(),
+            Zone::Battlefield,
+        );
+
+        let ability = ResolvedAbility::new(
+            Effect::Bounce {
+                target: TargetFilter::Any,
+                destination: Some(Zone::Library),
+            },
+            vec![TargetRef::Object(obj_id)],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert!(!state.battlefield.contains(&obj_id));
+        assert!(
+            state.players[0].library.contains(&obj_id),
+            "destination=Some(Library) must route to the library, not the hand"
+        );
+        assert!(!state.players[0].hand.contains(&obj_id));
+    }
+
+    /// CR 608.2c default: `destination: None` resolves to `Zone::Hand` — the
+    /// canonical Oracle phrasing "return ... to ... hand". Building-block
+    /// regression: every parser-emitted `Effect::Bounce` carries `None` today,
+    /// so this default underpins the entire bounce corpus.
+    #[test]
+    fn test_bounce_default_destination_is_hand() {
+        let mut state = GameState::new_two_player(42);
+        let obj_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Bear".to_string(),
+            Zone::Battlefield,
+        );
+
+        let ability = ResolvedAbility::new(
+            Effect::Bounce {
+                target: TargetFilter::Any,
+                destination: None,
+            },
+            vec![TargetRef::Object(obj_id)],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert!(state.players[1].hand.contains(&obj_id));
     }
 
     /// CR 603.10 / Rancor class: LTB self-return triggers fire after the source

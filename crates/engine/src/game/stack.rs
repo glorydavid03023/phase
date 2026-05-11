@@ -492,7 +492,23 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
                 }
             }
         } else {
-            zones::move_to_zone(state, entry.id, dest, events);
+            // CR 608.2n: "As the final part of an instant or sorcery spell's
+            // resolution, the spell is put into its owner's graveyard."
+            // If the spell's own instructions already moved it off the Stack
+            // (e.g., Treasured Find / Arc Blade — "Exile ~", or any sub-ability
+            // that targets the source via `SelfRef`), the post-resolution
+            // default move must be skipped — otherwise the spell card travels
+            // exile→graveyard and undoes its own self-exile clause (issue
+            // #323). The Stack-residency check is the canonical guard: only
+            // spells still on the Stack at the end of resolution receive the
+            // 608.2n default destination.
+            if state
+                .objects
+                .get(&entry.id)
+                .is_some_and(|obj| obj.zone == Zone::Stack)
+            {
+                zones::move_to_zone(state, entry.id, dest, events);
+            }
         }
 
         // CR 715.4 / CR 720.4: Outside the stack, Adventure-family cards have

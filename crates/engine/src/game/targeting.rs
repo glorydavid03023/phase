@@ -309,16 +309,25 @@ pub fn resolve_event_context_targets(
 /// CR 608.2c + CR 603.10a: Resolve the effective targets for a resolving
 /// ability across the three Oracle-text target sources, in priority order:
 ///
-/// 1. **Self-reference**: when the filter is one of `None`, `SelfRef`, or
-///    `ParentTarget` AND `ability.targets` is empty, the subject is the
-///    source object itself (the parser's `~` anaphor / "it" anaphor on
-///    top-level triggers — Academy Rector, Bronzehide Lion, Loyal Cathar).
-///    `TriggeringSource` is deliberately excluded — it resolves via
-///    `resolve_event_context_target` reading `state.current_trigger_event`.
-/// 2. **Event context**: filters like `TriggeringSource`, `DefendingPlayer`,
+/// 1. **Self-reference**: `TargetFilter::SelfRef` always resolves to the
+///    source object itself, regardless of `ability.targets`. This is the
+///    parser's `~` anaphor — "Exile Treasured Find", "Sacrifice Arc Blade",
+///    "When ~ enters, ..." — and it is semantically distinct from the
+///    parent's chosen target. When a chained sub-ability's filter is
+///    `SelfRef`, the chain target propagation in `effects::mod.rs` may have
+///    injected the parent's targets into `ability.targets`; the `SelfRef`
+///    semantic must override that injection (issue #323 — Treasured Find's
+///    "Exile ~" was self-exiling whichever object the parent bounce had
+///    targeted instead of the spell itself).
+/// 2. **None / ParentTarget fallback**: when these filters appear and
+///    `ability.targets` is empty, the subject is the source object (the
+///    "it" anaphor on top-level LTB triggers — Rancor, Spirit Loop). When
+///    `ability.targets` is non-empty, `ParentTarget` semantically inherits
+///    the parent's chosen targets, so fall through to tier 3.
+/// 3. **Event context**: filters like `TriggeringSource`, `DefendingPlayer`,
 ///    `AttachedTo` resolve from `state.current_trigger_event` without
 ///    requiring player selection (CR 603.7c).
-/// 3. **Pre-selected targets**: the ability's chosen targets from CR 601.2c
+/// 4. **Pre-selected targets**: the ability's chosen targets from CR 601.2c
 ///    casting / CR 603.3d trigger placement.
 ///
 /// Returns the targets from the first non-empty tier, owning the result so
@@ -328,9 +337,17 @@ pub fn resolved_targets(
     target_filter: &TargetFilter,
     state: &GameState,
 ) -> Vec<TargetRef> {
+    // CR 608.2c: SelfRef is the printed-name anaphor (`~`) — its referent is
+    // the source object itself, never a chosen target. Must short-circuit
+    // before the `ability.targets` fallback so chained "Exile ~" sub-abilities
+    // don't accidentally inherit the parent's targets via the chain target
+    // propagation in `effects::mod.rs::resolve_chain`.
+    if matches!(target_filter, TargetFilter::SelfRef) {
+        return vec![TargetRef::Object(ability.source_id)];
+    }
     let use_self = matches!(
         target_filter,
-        TargetFilter::None | TargetFilter::SelfRef | TargetFilter::ParentTarget
+        TargetFilter::None | TargetFilter::ParentTarget
     ) && ability.targets.is_empty();
     if use_self {
         return vec![TargetRef::Object(ability.source_id)];
@@ -2040,6 +2057,31 @@ mod tests {
             vec![TargetRef::Player(PlayerId(0))],
             "DefendingPlayer should resolve to the attacked player"
         );
+    }
+
+    /// CR 608.2c (issue #323): `SelfRef` always resolves to the source object,
+    /// even when `ability.targets` is non-empty. The chained "Exile ~"
+    /// sub-ability of cards like Treasured Find / Arc Blade gets its
+    /// `targets` populated by the chain target-propagation in
+    /// `effects::mod.rs::resolve_chain` (it copies the parent's targets when
+    /// the sub's targets are empty). Without the SelfRef short-circuit, the
+    /// sub-ability would target the parent's chosen object instead of the
+    /// source, exiling the wrong thing.
+    #[test]
+    fn resolved_targets_self_ref_overrides_propagated_parent_targets() {
+        let (mut state, c0, c1) = setup_with_creatures();
+        // Source = c0; ability.targets = [c1] (simulating the parent's chosen
+        // bounce target propagated into the sub-ability via the chain
+        // target-propagation in effects::mod.rs).
+        let ability = make_resolved_with_targets(vec![TargetRef::Object(c1)], c0);
+        let result = resolved_targets(&ability, &TargetFilter::SelfRef, &state);
+        assert_eq!(
+            result,
+            vec![TargetRef::Object(c0)],
+            "SelfRef must always resolve to source, not the propagated parent target"
+        );
+        // Suppress unused-variable warning when setup_with_creatures changes.
+        let _ = &mut state;
     }
 
     /// CR 601.2c: Tier 3 — when neither self-ref nor event-context applies,
