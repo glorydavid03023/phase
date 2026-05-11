@@ -5522,4 +5522,60 @@ mod tests {
             "trigger must fire when an opponent's creature card is milled"
         );
     }
+
+    /// Issue #311 end-to-end: parse the Undead Alchemist trigger line and
+    /// confirm the parsed `TriggerDefinition` rejects the source's own
+    /// battlefield death. Tightens the regression net by exercising the
+    /// parse → match pipeline together rather than the matcher in isolation.
+    #[test]
+    fn undead_alchemist_parsed_trigger_rejects_self_death_end_to_end() {
+        let trigger = parse_trigger_line(
+            "Whenever a creature card is put into an opponent's graveyard from their library, exile that card.",
+            "Undead Alchemist",
+        );
+
+        let mut state = setup();
+        let source = create_object(
+            &mut state,
+            CardId(311),
+            PlayerId(0),
+            "Undead Alchemist".to_string(),
+            Zone::Battlefield,
+        );
+
+        // Self-death: source going from Battlefield → Graveyard, controller=You.
+        let self_dying = GameEvent::ZoneChanged {
+            object_id: source,
+            from: Some(Zone::Battlefield),
+            to: Zone::Graveyard,
+            record: Box::new(ZoneChangeRecord {
+                core_types: vec![CoreType::Creature],
+                controller: PlayerId(0),
+                owner: PlayerId(0),
+                ..ZoneChangeRecord::test_minimal(source, Some(Zone::Battlefield), Zone::Graveyard)
+            }),
+        };
+        assert!(
+            !match_changes_zone(&self_dying, &trigger, source, &state),
+            "parsed Undead Alchemist trigger must not fire on its own death"
+        );
+
+        // Opponent's creature milled (Library → Graveyard, controller=Opponent) — fires.
+        let opp_milled = ObjectId(102);
+        let opp_milled_event = GameEvent::ZoneChanged {
+            object_id: opp_milled,
+            from: Some(Zone::Library),
+            to: Zone::Graveyard,
+            record: Box::new(ZoneChangeRecord {
+                core_types: vec![CoreType::Creature],
+                controller: PlayerId(1),
+                owner: PlayerId(1),
+                ..ZoneChangeRecord::test_minimal(opp_milled, Some(Zone::Library), Zone::Graveyard)
+            }),
+        };
+        assert!(
+            match_changes_zone(&opp_milled_event, &trigger, source, &state),
+            "parsed Undead Alchemist trigger must fire when an opponent's creature is milled"
+        );
+    }
 }
