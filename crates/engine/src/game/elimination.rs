@@ -67,6 +67,19 @@ pub fn eliminate_player(state: &mut GameState, player: PlayerId, events: &mut Ve
 /// bottoms phase (or finish mulligans). If it empties the bottoms phase,
 /// finish mulligans directly.
 fn prune_mulligan_pending(state: &mut GameState, events: &mut Vec<GameEvent>) {
+    // CR 800.4a: Drop any final-mulligan-count entries for players who have
+    // been eliminated. Symmetric with the pending-list pruning below so
+    // enter_bottom_phase never sees stale entries for dead players.
+    let alive: std::collections::HashSet<PlayerId> = state
+        .final_mulligan_counts
+        .keys()
+        .copied()
+        .filter(|pid| players::is_alive(state, *pid))
+        .collect();
+    state
+        .final_mulligan_counts
+        .retain(|pid, _| alive.contains(pid));
+
     match state.waiting_for.clone() {
         WaitingFor::MulliganDecision {
             pending,

@@ -1423,6 +1423,7 @@ function MulliganDecisionPrompt({
 }: MulliganDecisionPromptProps) {
   const player = useGameStore((s) => s.gameState?.players[playerId]);
   const objects = useGameStore((s) => s.gameState?.objects);
+  const legalActions = useGameStore((s) => s.legalActions);
   const hoverProps = useInspectHoverProps();
   const [buttonsVisible, setButtonsVisible] = useState(false);
 
@@ -1432,15 +1433,19 @@ function MulliganDecisionPrompt({
   const nextMulliganFree = freeFirstMulligan && mulliganCount === 0;
   const nextHandSize = 7 - Math.max(0, mulliganCount + 1 - (freeFirstMulligan ? 1 : 0));
 
-  // CR 103.5b + Serum Powder Oracle text: collect every Serum Powder in this
-  // player's hand. Each one exposes a dedicated "Use Serum Powder" button —
-  // the player picks which copy goes to exile with the rest of the hand.
-  const serumPowderIds: number[] = (player && objects
-    ? player.hand.filter((id) => {
-        const obj = objects[id];
-        return obj?.name?.toLowerCase() === "serum powder";
-      })
-    : []);
+  // CR 103.5b + Serum Powder Oracle text: surface one button per legal
+  // `UseSerumPowder` action the engine has already enumerated. The engine
+  // (`ai_support::candidates::serum_powders_in_hand`) is the single authority
+  // for which hand object qualifies — the FE must not duplicate the
+  // name-match check. Each candidate carries an `object_id` whose display
+  // name comes from `objects[id]?.name`.
+  const serumPowderIds: number[] = legalActions
+    .map((a) =>
+      a.type === "MulliganDecision" && a.data.choice.type === "UseSerumPowder"
+        ? a.data.choice.data.object_id
+        : null,
+    )
+    .filter((oid): oid is number => oid !== null);
 
   if (!player || !objects) {
     const fallbackOptions = [
@@ -1459,10 +1464,12 @@ function MulliganDecisionPrompt({
           ? "Shuffle and draw 7 — no cards to the bottom"
           : "Shuffle and draw 7 again",
       },
-      // CR 103.5b: A Powder option per Powder in hand (rare card, usually 0).
+      // CR 103.5b: A Powder option per legal `UseSerumPowder` candidate the
+      // engine emitted. The button label uses the object's engine-provided
+      // name so the FE never re-evaluates which hand objects qualify.
       ...serumPowderIds.map((oid) => ({
         id: `powder:${oid}`,
-        label: "Use Serum Powder",
+        label: `Use ${objects?.[oid]?.name ?? "Serum Powder"}`,
         description: "Exile every card in hand, draw the same number — not a mulligan",
       })),
     ];
@@ -1504,7 +1511,8 @@ function MulliganDecisionPrompt({
               >
                 {nextMulliganFree ? "Free Mulligan" : `Mulligan to ${nextHandSize}`}
               </button>
-              {/* CR 103.5b: Render a Serum Powder button per Powder in hand. */}
+              {/* CR 103.5b: One button per legal `UseSerumPowder` candidate
+                  the engine surfaced. Name comes from engine-provided state. */}
               {serumPowderIds.map((oid) => (
                 <button
                   key={oid}
@@ -1512,7 +1520,7 @@ function MulliganDecisionPrompt({
                   className="rounded-[10px] border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-200 transition hover:bg-amber-500/20 hover:text-amber-100 lg:min-h-11 lg:rounded-[16px] lg:px-5 lg:py-3 lg:text-base"
                   title="Exile every card in your hand and draw the same number. Not a mulligan — count and bottoms unaffected."
                 >
-                  Use Serum Powder
+                  {`Use ${objects?.[oid]?.name ?? "Serum Powder"}`}
                 </button>
               ))}
               <button

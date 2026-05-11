@@ -1046,9 +1046,36 @@ fn apply_action(
         return Ok(result);
     }
 
-    // Sandbox host-only grant/revoke of debug permission. Server-core verifies
-    // the actor is the host (PlayerId(0)); this engine handler trusts that
-    // and applies the mutation. Emits a public audit event.
+    // Sandbox host-only grant/revoke of debug permission. server-core also
+    // checks this at the transport boundary; the engine repeats the check as
+    // defense-in-depth so WASM and P2P-host paths cannot be bypassed by a
+    // malicious actor crafting the action shape directly. The host convention
+    // (PlayerId(0)) is fixed across every transport — see
+    // `crates/server-core/src/session.rs` `HOST_PLAYER`. Emits a public audit
+    // event on success.
+    const HOST_PLAYER: PlayerId = PlayerId(0);
+    if matches!(
+        action,
+        GameAction::GrantDebugPermission { .. } | GameAction::RevokeDebugPermission { .. }
+    ) {
+        if !state.format_config.allow_debug_actions {
+            return Err(EngineError::ActionNotAllowed(
+                "Sandbox mode is not enabled for this game".to_string(),
+            ));
+        }
+        if actor != HOST_PLAYER {
+            return Err(EngineError::ActionNotAllowed(
+                "Only the host can grant or revoke debug permission".to_string(),
+            ));
+        }
+        if let GameAction::RevokeDebugPermission { player_id } = action {
+            if player_id == HOST_PLAYER {
+                return Err(EngineError::ActionNotAllowed(
+                    "The host cannot revoke their own debug permission".to_string(),
+                ));
+            }
+        }
+    }
     if let GameAction::GrantDebugPermission { player_id } = action {
         state.debug_permitted.insert(player_id);
         events.push(crate::types::events::GameEvent::DebugPermissionGranted {
@@ -14472,6 +14499,131 @@ mod mdfc_land_tests {
         assert!(
             land_actions.is_empty(),
             "CR 712.8a: MDFC Creature/Land in graveyard should not be offered as PlayLand"
+        );
+    }
+
+    /// Engine-level defense-in-depth: a non-host actor must not be able to
+    /// grant debug permission, even when sandbox mode is enabled. server-core
+    /// also checks this at the transport boundary; this test pins the
+    /// engine-side guard so WASM/P2P-host adapters cannot be bypassed by
+    /// crafting the action shape directly.
+    #[test]
+    fn grant_debug_permission_rejected_for_non_host() {
+        let mut state = GameState::new(
+            crate::types::format::FormatConfig::standard().with_sandbox(),
+            2,
+            42,
+        );
+        let err = apply(
+            &mut state,
+            PlayerId(1),
+            GameAction::GrantDebugPermission {
+                player_id: PlayerId(1),
+            },
+        )
+        .expect_err("non-host Grant must be rejected");
+        assert!(
+            matches!(err, EngineError::ActionNotAllowed(_)),
+            "got {:?}",
+            err
+        );
+        assert!(
+            !state.debug_permitted.contains(&PlayerId(1)),
+            "permission must not have been mutated on rejection"
+        );
+    }
+
+    /// Engine-level defense-in-depth: Grant/Revoke is rejected outright when
+    /// the format does not have `allow_debug_actions` set. Closes the WASM /
+    /// P2P-host path that previously skipped this check.
+    #[test]
+    fn grant_debug_permission_rejected_when_sandbox_disabled() {
+        let mut state = GameState::new(crate::types::format::FormatConfig::standard(), 2, 42);
+        let err = apply(
+            &mut state,
+            PlayerId(0),
+            GameAction::GrantDebugPermission {
+                player_id: PlayerId(1),
+            },
+        )
+        .expect_err("Grant must be rejected when sandbox is disabled");
+        assert!(
+            matches!(err, EngineError::ActionNotAllowed(_)),
+            "got {:?}",
+            err
+        );
+    }
+
+    /// Engine-level: the host may grant; afterwards the granted player can
+    /// submit a Debug action that the engine accepts.
+    #[test]
+    fn grant_debug_permission_succeeds_for_host_and_unlocks_debug() {
+        let mut state = GameState::new(
+            crate::types::format::FormatConfig::standard().with_sandbox(),
+            2,
+            42,
+        );
+        state.debug_mode = true;
+        // Host (PlayerId(0)) is implicitly authorized; seed empty set first.
+        state.debug_permitted.clear();
+
+        let result = apply(
+            &mut state,
+            PlayerId(0),
+            GameAction::GrantDebugPermission {
+                player_id: PlayerId(1),
+            },
+        )
+        .expect("host Grant should succeed");
+        assert!(state.debug_permitted.contains(&PlayerId(1)));
+        assert!(result
+            .events
+            .iter()
+            .any(|e| matches!(e, GameEvent::DebugPermissionGranted { .. })));
+
+        // Post-grant: the granted player can now submit a Debug action that
+        // the engine accepts. Use `ShuffleLibrary` — a side-effect-light op
+        // that doesn't require pre-existing objects.
+        let debug_result = apply(
+            &mut state,
+            PlayerId(1),
+            GameAction::Debug(crate::types::actions::DebugAction::ShuffleLibrary {
+                player_id: PlayerId(1),
+            }),
+        )
+        .expect("granted player's Debug action should succeed");
+        assert!(debug_result
+            .events
+            .iter()
+            .any(|e| matches!(e, GameEvent::DebugActionUsed { .. })));
+    }
+
+    /// Engine-level: the host may not revoke their own permission — that
+    /// would leave nobody able to act in sandbox.
+    #[test]
+    fn revoke_debug_permission_rejects_host_self_revoke() {
+        let mut state = GameState::new(
+            crate::types::format::FormatConfig::standard().with_sandbox(),
+            2,
+            42,
+        );
+        state.debug_permitted.insert(PlayerId(0));
+        let err = apply(
+            &mut state,
+            PlayerId(0),
+            GameAction::RevokeDebugPermission {
+                player_id: PlayerId(0),
+            },
+        )
+        .expect_err("host self-revoke must be rejected");
+        assert!(
+            matches!(err, EngineError::ActionNotAllowed(_)),
+            "got {:?}",
+            err
+        );
+        assert!(
+            state.debug_permitted.contains(&PlayerId(0)),
+            "host permission must remain on rejection"
         );
     }
 }

@@ -56,10 +56,18 @@ export function createAIController(config: AIControllerConfig): AIController {
   const difficultyByPlayerId = new Map(config.seats.map((s) => [s.playerId, s.difficulty]));
   const aiPlayerIds = new Set(difficultyByPlayerId.keys());
 
-  /** Stable identity key for a WaitingFor — type + player so Priority{0} ≠ Priority{1}. */
-  function waitingForKey(wf: WaitingFor): string {
+  /**
+   * Stable identity key for a WaitingFor — type + player so Priority{0} ≠ Priority{1}.
+   *
+   * For simultaneous-mulligan states (`MulliganDecision`, `MulliganBottomCards`)
+   * `data.player` is undefined, so falling back to -1 would collapse every
+   * pending seat to the same key. We instead key by the AI seat that the
+   * controller is currently driving, so failure counters reset between seats
+   * and a failing P0 submission does not consume P1's budget.
+   */
+  function waitingForKey(wf: WaitingFor, drivingPlayerId: number | null): string {
     const data = (wf as { data?: { player?: number } }).data;
-    const player = data?.player ?? -1;
+    const player = drivingPlayerId ?? data?.player ?? -1;
     return `${wf.type}:${player}`;
   }
 
@@ -134,7 +142,7 @@ export function createAIController(config: AIControllerConfig): AIController {
     // Reset failure counters when the WaitingFor state changes (type or player).
     // `consecutiveFailures` gates normal→fallback escalation; `totalFailures`
     // is the absolute hard stop that kills the controller.
-    const key = waitingForKey(waitingFor);
+    const key = waitingForKey(waitingFor, mulliganPid);
     if (key !== lastWaitingForKey) {
       lastWaitingForKey = key;
       consecutiveFailures = 0;

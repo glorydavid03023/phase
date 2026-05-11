@@ -15,7 +15,24 @@ use super::zones;
 
 /// CR 103.4: Starting hand size is seven cards.
 const STARTING_HAND_SIZE: usize = 7;
+/// CR 103.5 (final sentence): a player may take mulligans until their opening
+/// hand would be zero cards. In a standard game that means at most 7 mulligans
+/// (7→6→5→4→3→2→1→0; the 8th would be 0). CR 103.5c adds that in free-first
+/// formats the first mulligan is uncounted, so the cap shifts up by one to 8
+/// — the player may still be brought all the way down to a 1-card opening
+/// hand after exhausting their bottoms allowance.
 const MAX_MULLIGANS: u8 = 7;
+
+/// CR 103.5 + 103.5c: maximum number of `Mulligan` submissions a player may
+/// make before being force-removed from `pending`. In free-first formats the
+/// first mulligan doesn't count toward this cap.
+fn max_mulligans_for(free_first: bool) -> u8 {
+    if free_first {
+        MAX_MULLIGANS + 1
+    } else {
+        MAX_MULLIGANS
+    }
+}
 
 /// Card name that grants the CR 103.5b "you could mulligan" action implemented
 /// here. Match is case-insensitive and exact (CR 201.2 — name is the printed
@@ -139,10 +156,12 @@ pub fn handle_mulligan_decision(
             shuffle_hand_into_library(state, player, events);
             draw_n(state, player, STARTING_HAND_SIZE, events);
 
-            if new_count >= MAX_MULLIGANS {
-                // CR 103.5: A player may take mulligans until their opening
-                // hand would be zero cards. Force-remove from pending; the
-                // bottoms phase will bottom every card in their hand.
+            if new_count >= max_mulligans_for(free_first) {
+                // CR 103.5 + 103.5c: A player may take mulligans until their
+                // opening hand would be zero cards. In free-first formats the
+                // first mulligan is uncounted, so the cap is one higher.
+                // Force-remove from pending; the bottoms phase will bottom
+                // every card in their hand.
                 record_final_count(state, player, new_count);
                 pending.remove(idx);
             } else {
@@ -264,7 +283,10 @@ fn enter_bottom_phase(state: &mut GameState, events: &mut Vec<GameEvent>) -> Wai
     let pending: Vec<MulliganBottomEntry> = state
         .seat_order
         .iter()
+        .filter(|&&player_id| super::players::is_alive(state, player_id))
         .filter_map(|&player_id| {
+            // CR 800.4a: A player who conceded during the decision phase is
+            // skipped — they cannot submit bottoms and would deadlock the game.
             let count = state
                 .final_mulligan_counts
                 .get(&player_id)
@@ -1282,5 +1304,165 @@ mod tests {
             .expect("second Powder use");
         assert_eq!(decision_count_for(&waiting, PlayerId(0)), Some(0));
         assert_eq!(state.objects[&top_of_library].zone, Zone::Exile);
+    }
+
+    /// CR 103.5 + 103.5c: In a non-free-first format (Standard duel), the 7th
+    /// `Mulligan` brings the player to a 0-card opening hand and must
+    /// force-remove them from `pending`. The 8th is never accepted because
+    /// they were already force-removed.
+    #[test]
+    fn max_mulligans_standard_duel_caps_at_seven() {
+        let mut state = setup_with_libraries(60);
+        let mut events = Vec::new();
+        state.waiting_for = start_mulligan(&mut state, &mut events);
+
+        // Seven mulligans in a row. The 7th hits the cap and force-removes P0.
+        for _ in 0..7 {
+            decide(&mut state, PlayerId(0), false, &mut events);
+        }
+        assert!(
+            !pending_decision_players(&state.waiting_for).contains(&PlayerId(0)),
+            "P0 should be force-removed after 7 mulligans in a non-free-first format"
+        );
+        assert_eq!(
+            state.final_mulligan_counts.get(&PlayerId(0)).copied(),
+            Some(7),
+            "P0's locked-in mulligan count should be 7"
+        );
+
+        // 8th submission must be rejected — P0 is no longer in pending.
+        let result = handle_mulligan_decision(
+            &mut state,
+            PlayerId(0),
+            MulliganChoice::Mulligan,
+            &mut events,
+        );
+        assert!(
+            result.is_err(),
+            "8th Mulligan must be rejected in non-free-first format"
+        );
+    }
+
+    /// CR 103.5 + 103.5c: In a free-first format (Commander duel, Brawl, or
+    /// any multiplayer game), the player gets one uncounted mulligan, so the
+    /// 8th `Mulligan` submission is still permitted (bringing them to a
+    /// 1-card opening hand: 7→6→5→4→3→2→1). Only the 9th would hit the cap.
+    #[test]
+    fn max_mulligans_free_first_format_permits_eighth() {
+        use crate::types::format::FormatConfig;
+
+        let mut state = GameState::new(FormatConfig::commander(), 2, 42);
+        state.turn_number = 1;
+        state.phase = crate::types::phase::Phase::Untap;
+        for player_idx in 0..2u8 {
+            for i in 0..60 {
+                create_object(
+                    &mut state,
+                    CardId((player_idx as u64) * 100 + i as u64),
+                    PlayerId(player_idx),
+                    format!("Card {} P{}", i, player_idx),
+                    Zone::Library,
+                );
+            }
+        }
+        let mut events = Vec::new();
+        state.waiting_for = start_mulligan(&mut state, &mut events);
+
+        // 7 mulligans must keep P0 still in pending (free-first → cap is 8).
+        for _ in 0..7 {
+            decide(&mut state, PlayerId(0), false, &mut events);
+        }
+        assert!(
+            pending_decision_players(&state.waiting_for).contains(&PlayerId(0)),
+            "free-first format: P0 should still be pending after 7 mulligans"
+        );
+        assert_eq!(
+            decision_count_for(&state.waiting_for, PlayerId(0)),
+            Some(7),
+            "P0 mulligan_count should be 7"
+        );
+
+        // 8th mulligan is the cap-triggering submission in a free-first format.
+        decide(&mut state, PlayerId(0), false, &mut events);
+        assert!(
+            !pending_decision_players(&state.waiting_for).contains(&PlayerId(0)),
+            "8th mulligan force-removes in free-first format"
+        );
+        assert_eq!(
+            state.final_mulligan_counts.get(&PlayerId(0)).copied(),
+            Some(8),
+            "P0's locked-in mulligan count should be 8"
+        );
+    }
+
+    /// CR 103.5: 4-player simultaneous mulligan — submissions arrive in a
+    /// non-seat order (P3, P1, P0, P2) and the game still starts cleanly.
+    /// Regression for the assumption that ordering matters during the
+    /// simultaneous-decision phase.
+    #[test]
+    fn four_player_keep_in_arbitrary_order_starts_game() {
+        let mut state = setup_n_player_with_libraries(4, 20);
+        let mut events = Vec::new();
+        state.waiting_for = start_mulligan(&mut state, &mut events);
+
+        for &pid in &[PlayerId(3), PlayerId(1), PlayerId(0), PlayerId(2)] {
+            let _ = decide(&mut state, pid, true, &mut events);
+        }
+        assert!(
+            matches!(state.waiting_for, WaitingFor::Priority { .. }),
+            "game should start after all four kept in non-seat order, got {:?}",
+            state.waiting_for
+        );
+    }
+
+    /// CR 103.5 + CR 800.4a: A player who concedes during the mulligan
+    /// decision phase must not appear in the bottoms phase entry list, even
+    /// if they kept with a non-zero mulligan count beforehand. Tested in a
+    /// 3-player pod so the game does not end on concede.
+    #[test]
+    fn concede_during_mulligan_excludes_from_bottoms() {
+        use crate::game::engine::apply;
+        use crate::types::actions::GameAction;
+
+        // Multiplayer (3 seats) grants free-first per CR 103.5c — take TWO
+        // mulligans so P0's locked-in bottoms count is non-zero (2 - 1 = 1).
+        let mut state = setup_n_player_with_libraries(3, 30);
+        let mut events = Vec::new();
+        state.waiting_for = start_mulligan(&mut state, &mut events);
+
+        // P0 mulligans twice then keeps (locks in mulligan_count = 2 → owes 1 bottom).
+        decide(&mut state, PlayerId(0), false, &mut events);
+        decide(&mut state, PlayerId(0), false, &mut events);
+        decide(&mut state, PlayerId(0), true, &mut events);
+        assert_eq!(
+            state.final_mulligan_counts.get(&PlayerId(0)).copied(),
+            Some(2),
+            "P0 should have a final mulligan count of 2 after keeping"
+        );
+
+        // P0 concedes before P1/P2 keep. Game does not end (2 living players
+        // remain). Elimination prunes pending and final_mulligan_counts.
+        let _ = apply(
+            &mut state,
+            PlayerId(0),
+            GameAction::Concede {
+                player_id: PlayerId(0),
+            },
+        )
+        .expect("concede");
+        assert!(
+            !state.final_mulligan_counts.contains_key(&PlayerId(0)),
+            "eliminated player should be pruned from final_mulligan_counts"
+        );
+
+        // P1 and P2 keep → bottoms phase should not include P0.
+        decide(&mut state, PlayerId(1), true, &mut events);
+        let waiting = decide(&mut state, PlayerId(2), true, &mut events);
+        assert_eq!(
+            pending_bottom_for(&waiting, PlayerId(0)),
+            None,
+            "conceded P0 must not be in bottoms phase, got {:?}",
+            waiting
+        );
     }
 }
