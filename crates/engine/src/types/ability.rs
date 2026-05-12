@@ -7875,8 +7875,8 @@ pub enum TriggerConstraint {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         filter: Option<TargetFilter>,
     },
-    /// "Whenever you draw your Nth card each turn" — fires exactly when
-    /// the controller's `cards_drawn_this_turn` equals `n`.
+    /// "Whenever you draw your Nth card each turn" — fires exactly when the
+    /// triggering draw event's per-turn ordinal equals `n`.
     NthDrawThisTurn { n: u32 },
     /// "At the beginning of each opponent's [phase]"
     OnlyDuringOpponentsTurn,
