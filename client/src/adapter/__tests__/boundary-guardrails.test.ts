@@ -34,7 +34,7 @@ function rustEnumVariants(source: string, enumName: string): string[] {
         return Array.from(
           source
             .slice(bodyStart + 1, index)
-            .matchAll(/^ {4}([A-Z][A-Za-z0-9]+)\s*(?:\{|,)/gm),
+            .matchAll(/^ {4}([A-Z][A-Za-z0-9]+)\s*(?:\{|\(|,)/gm),
           (match) => match[1],
         );
       }
@@ -54,7 +54,9 @@ function tsUnionVariantTypes(source: string, typeName: string, followingHeader: 
   );
 
   return Array.from(
-    source.slice(unionStart, unionEnd).matchAll(/type: "([A-Z][A-Za-z0-9]+)"/g),
+    source
+      .slice(unionStart, unionEnd)
+      .matchAll(/^ {2}\| \{(?: type:|\n {6}type:) "([A-Z][A-Za-z0-9]+)"/gm),
     (match) => match[1],
   );
 }
@@ -79,6 +81,17 @@ describe("adapter boundary guardrails", () => {
 
     const rustVariants = rustEnumVariants(rustSource, "WaitingFor");
     const tsVariants = tsUnionVariantTypes(tsSource, "WaitingFor", "// ── Learn");
+
+    expect(new Set(tsVariants)).toEqual(new Set(rustVariants));
+  });
+
+  it("keeps the frontend GameAction union in lockstep with the engine enum", () => {
+    const root = repoRoot();
+    const rustSource = readFileSync(resolve(root, "crates/engine/src/types/actions.rs"), "utf8");
+    const tsSource = readFileSync(resolve(root, "client/src/adapter/types.ts"), "utf8");
+
+    const rustVariants = rustEnumVariants(rustSource, "GameAction");
+    const tsVariants = tsUnionVariantTypes(tsSource, "GameAction", "// CR 605.3b");
 
     expect(new Set(tsVariants)).toEqual(new Set(rustVariants));
   });
