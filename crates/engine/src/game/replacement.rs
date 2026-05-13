@@ -1910,13 +1910,10 @@ fn evaluate_replacement_condition(
         // turn start (`start_next_turn`).
         ReplacementCondition::OpponentDamagedThisTurn => {
             let opponents = crate::game::players::opponents(state, controller);
-            state.damage_dealt_this_turn.iter().any(|r| match r.target {
-                TargetRef::Player(pid) => opponents.contains(&pid),
-                TargetRef::Object(oid) => state
-                    .objects
-                    .get(&oid)
-                    .is_some_and(|obj| opponents.contains(&obj.controller)),
-            })
+            state
+                .damage_dealt_this_turn
+                .iter()
+                .any(|r| opponents.contains(&r.target_controller))
         }
         // CR 702.33d + CR 702.33f: "if was kicked" — applies only when the
         // source permanent's spell was kicked. `kickers_paid` is populated at
@@ -4282,6 +4279,7 @@ mod tests {
             source_id: ObjectId(10),
             source_controller: PlayerId(0),
             target: TargetRef::Object(ObjectId(20)),
+            target_controller: PlayerId(0),
             amount: 1,
             is_combat: false,
         });
@@ -4304,6 +4302,45 @@ mod tests {
             ObjectId(10),
             &state,
             Some(ObjectId(30)),
+            &dummy_begin_turn_event(),
+        ));
+    }
+
+    #[test]
+    fn opponent_damaged_condition_uses_recorded_target_controller() {
+        let mut state = test_state_with_object(ObjectId(10), Zone::Battlefield, Vec::new());
+        let mut victim = GameObject::new(
+            ObjectId(20),
+            CardId(2),
+            PlayerId(1),
+            "Victim".to_string(),
+            Zone::Battlefield,
+        );
+        victim.controller = PlayerId(0);
+        state.objects.insert(ObjectId(20), victim);
+        state.damage_dealt_this_turn.push(DamageRecord {
+            source_id: ObjectId(10),
+            source_controller: PlayerId(0),
+            target: TargetRef::Object(ObjectId(20)),
+            target_controller: PlayerId(1),
+            amount: 1,
+            is_combat: false,
+        });
+
+        assert!(evaluate_replacement_condition(
+            &ReplacementCondition::OpponentDamagedThisTurn,
+            PlayerId(0),
+            ObjectId(10),
+            &state,
+            None,
+            &dummy_begin_turn_event(),
+        ));
+        assert!(!evaluate_replacement_condition(
+            &ReplacementCondition::OpponentDamagedThisTurn,
+            PlayerId(1),
+            ObjectId(10),
+            &state,
+            None,
             &dummy_begin_turn_event(),
         ));
     }
@@ -4333,6 +4370,7 @@ mod tests {
             source_id: ObjectId(20),
             source_controller: PlayerId(0),
             target: TargetRef::Object(ObjectId(30)),
+            target_controller: PlayerId(0),
             amount: 1,
             is_combat: false,
         });

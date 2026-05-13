@@ -3167,6 +3167,7 @@ mod tests {
             source_id: damage_source,
             source_controller: PlayerId(1),
             target: TargetRef::Object(creature),
+            target_controller: PlayerId(0),
             amount: 2,
             is_combat: true,
         });

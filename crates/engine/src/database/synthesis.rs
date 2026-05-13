@@ -8427,6 +8427,7 @@ mod bloodthirst_runtime_tests {
             source_id: ObjectId(999), // any source; CR 702.54a doesn't care
             source_controller: PlayerId(0),
             target: TargetRef::Player(PlayerId(1)),
+            target_controller: PlayerId(1),
             amount: 1,
             is_combat: false,
         });
@@ -8472,6 +8473,7 @@ mod bloodthirst_runtime_tests {
                 source_id,
                 source_controller: PlayerId(0),
                 target: TargetRef::Player(PlayerId(1)),
+                target_controller: PlayerId(1),
                 amount: 2,
                 is_combat: false,
             },
@@ -8479,6 +8481,7 @@ mod bloodthirst_runtime_tests {
                 source_id,
                 source_controller: PlayerId(0),
                 target: TargetRef::Player(PlayerId(1)),
+                target_controller: PlayerId(1),
                 amount: 3,
                 is_combat: true,
             },
@@ -8486,6 +8489,7 @@ mod bloodthirst_runtime_tests {
                 source_id,
                 source_controller: PlayerId(0),
                 target: TargetRef::Player(PlayerId(0)),
+                target_controller: PlayerId(0),
                 amount: 7,
                 is_combat: false,
             },
@@ -8518,6 +8522,7 @@ mod bloodthirst_runtime_tests {
             source_id,
             source_controller: PlayerId(0),
             target: TargetRef::Player(PlayerId(1)),
+            target_controller: PlayerId(1),
             amount: 4,
             is_combat: true,
         });
@@ -8555,6 +8560,7 @@ mod bloodthirst_runtime_tests {
             source_id: ObjectId(999),
             source_controller: PlayerId(0),
             target: TargetRef::Player(PlayerId(1)),
+            target_controller: PlayerId(1),
             amount: 4,
             is_combat: false,
         });
@@ -8596,6 +8602,7 @@ mod bloodthirst_runtime_tests {
             source_id: ObjectId(999),
             source_controller: PlayerId(0),
             target: TargetRef::Player(third_player),
+            target_controller: third_player,
             amount: 2,
             is_combat: false,
         });
@@ -8628,6 +8635,7 @@ mod bloodthirst_runtime_tests {
             source_id: ObjectId(999),
             source_controller: PlayerId(0),
             target: TargetRef::Player(PlayerId(1)),
+            target_controller: PlayerId(1),
             amount: 1,
             is_combat: true,
         });
@@ -8680,6 +8688,7 @@ mod bloodthirst_runtime_tests {
             source_id: ObjectId(999),
             source_controller: PlayerId(0),
             target: TargetRef::Player(PlayerId(1)),
+            target_controller: PlayerId(1),
             amount: 2,
             is_combat: true,
         });

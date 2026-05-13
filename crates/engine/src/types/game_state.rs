@@ -443,6 +443,8 @@ pub struct DamageRecord {
     #[serde(default)]
     pub source_controller: PlayerId,
     pub target: TargetRef,
+    #[serde(default)]
+    pub target_controller: PlayerId,
     pub amount: u32,
     #[serde(default)]
     pub is_combat: bool,

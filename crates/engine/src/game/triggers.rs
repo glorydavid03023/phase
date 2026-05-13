@@ -6456,6 +6456,7 @@ pub mod tests {
             source_id: source,
             source_controller: PlayerId(0),
             target: TargetRef::Object(dying_creature),
+            target_controller: PlayerId(0),
             amount: 3,
             is_combat: false,
         });
@@ -6515,6 +6516,7 @@ pub mod tests {
             source_id: ObjectId(1),
             source_controller: PlayerId(0),
             target: TargetRef::Object(ObjectId(2)),
+            target_controller: PlayerId(0),
             amount: 2,
             is_combat: true,
         });

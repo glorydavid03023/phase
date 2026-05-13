@@ -1776,7 +1776,7 @@ fn resolve_damage_dealt_this_turn(
     // change between damage and check still answers the rules-correct question.
     // Pass the rest of the filter (controller stripped) through the live-source
     // matcher for type/property predicates.
-    let (live_source_filter, lki_controller) = split_source_controller(source);
+    let (live_source_filter, lki_controller) = split_controller_filter(source);
     let live_source_filter_ref: &TargetFilter = live_source_filter.as_ref().unwrap_or(source);
 
     let source_matches = |record_source_id: ObjectId, record_source_controller: PlayerId| {
@@ -1797,7 +1797,9 @@ fn resolve_damage_dealt_this_turn(
 
     let matching = state.damage_dealt_this_turn.iter().filter(|record| {
         source_matches(record.source_id, record.source_controller)
-            && damage_record_target_matches(state, &record.target, target, filter_ctx)
+            && damage_record_target_matches(
+                state, record, controller, ctx, ability, target, filter_ctx,
+            )
     });
 
     match group_by {
@@ -1823,15 +1825,15 @@ fn resolve_damage_dealt_this_turn(
     }
 }
 
-/// Split a source filter into (controller-stripped clone, lifted controller).
+/// Split a target/source filter into (controller-stripped clone, lifted controller).
 ///
-/// CR 120.9: The controller predicate on a damage-history source filter must
-/// be evaluated against `DamageRecord::source_controller` (LKI), not against
-/// the live source object's controller — control of a source can change
+/// CR 120.9: The controller predicate on a damage-history participant filter
+/// must be evaluated against the `DamageRecord` participant controller snapshot,
+/// not against the live object's controller — control of an object can change
 /// between damage and check. Returns `(None, None)` when the filter has no
 /// controller predicate to lift, so callers can use the original filter
 /// reference without a heap allocation.
-fn split_source_controller(filter: &TargetFilter) -> (Option<TargetFilter>, Option<ControllerRef>) {
+fn split_controller_filter(filter: &TargetFilter) -> (Option<TargetFilter>, Option<ControllerRef>) {
     match filter {
         TargetFilter::Typed(typed) if typed.controller.is_some() => {
             let mut stripped = typed.clone();
@@ -1844,14 +1846,34 @@ fn split_source_controller(filter: &TargetFilter) -> (Option<TargetFilter>, Opti
 
 fn damage_record_target_matches(
     state: &GameState,
-    target: &TargetRef,
+    record: &crate::types::game_state::DamageRecord,
+    controller: PlayerId,
+    quantity_ctx: QuantityContext,
+    ability: Option<&ResolvedAbility>,
     filter: &TargetFilter,
-    ctx: &FilterContext<'_>,
+    filter_ctx: &FilterContext<'_>,
 ) -> bool {
-    match target {
-        TargetRef::Object(object_id) => matches_target_filter(state, *object_id, filter, ctx),
+    match record.target {
+        TargetRef::Object(object_id) => {
+            let (live_target_filter, lki_controller) = split_controller_filter(filter);
+            if let Some(expected) = lki_controller.as_ref() {
+                if !damage_source_controller_matches(
+                    state,
+                    record.target_controller,
+                    controller,
+                    quantity_ctx,
+                    ability,
+                    expected,
+                ) {
+                    return false;
+                }
+            }
+            let live_target_filter_ref: &TargetFilter =
+                live_target_filter.as_ref().unwrap_or(filter);
+            matches_target_filter(state, object_id, live_target_filter_ref, filter_ctx)
+        }
         TargetRef::Player(player_id) => {
-            player_matches_target_filter(filter, *player_id, ctx.source_controller)
+            player_matches_target_filter(filter, player_id, filter_ctx.source_controller)
         }
     }
 }
@@ -3497,6 +3519,7 @@ mod tests {
                 source_id: p0_source,
                 source_controller: PlayerId(0),
                 target: TargetRef::Player(PlayerId(1)),
+                target_controller: PlayerId(1),
                 amount: 3,
                 is_combat: false,
             },
@@ -3504,6 +3527,7 @@ mod tests {
                 source_id: p0_source,
                 source_controller: PlayerId(0),
                 target: TargetRef::Player(PlayerId(1)),
+                target_controller: PlayerId(1),
                 amount: 2,
                 is_combat: false,
             },
@@ -3511,6 +3535,7 @@ mod tests {
                 source_id: p0_other_source,
                 source_controller: PlayerId(0),
                 target: TargetRef::Player(PlayerId(1)),
+                target_controller: PlayerId(1),
                 amount: 4,
                 is_combat: false,
             },
@@ -3518,6 +3543,7 @@ mod tests {
                 source_id: p1_source,
                 source_controller: PlayerId(1),
                 target: TargetRef::Player(PlayerId(0)),
+                target_controller: PlayerId(0),
                 amount: 9,
                 is_combat: false,
             },
@@ -3559,6 +3585,7 @@ mod tests {
                 source_id: source,
                 source_controller: PlayerId(0),
                 target: TargetRef::Player(PlayerId(1)),
+                target_controller: PlayerId(1),
                 amount: 1,
                 is_combat: true,
             },
@@ -3566,6 +3593,7 @@ mod tests {
                 source_id: other_source,
                 source_controller: PlayerId(0),
                 target: TargetRef::Player(PlayerId(1)),
+                target_controller: PlayerId(1),
                 amount: 1,
                 is_combat: true,
             },
@@ -3605,6 +3633,7 @@ mod tests {
             source_id: damage_source,
             source_controller: PlayerId(1),
             target: TargetRef::Object(source),
+            target_controller: PlayerId(0),
             amount: 1,
             is_combat: false,
         });
@@ -3663,6 +3692,7 @@ mod tests {
                 source_id: p0_source,
                 source_controller: PlayerId(0),
                 target: TargetRef::Player(PlayerId(1)),
+                target_controller: PlayerId(1),
                 amount: 3,
                 is_combat: false,
             },
@@ -3670,6 +3700,7 @@ mod tests {
                 source_id: p0_source,
                 source_controller: PlayerId(0),
                 target: TargetRef::Player(PlayerId(1)),
+                target_controller: PlayerId(1),
                 amount: 2,
                 is_combat: false,
             },
@@ -3677,6 +3708,7 @@ mod tests {
                 source_id: p0_other,
                 source_controller: PlayerId(0),
                 target: TargetRef::Player(PlayerId(1)),
+                target_controller: PlayerId(1),
                 amount: 4,
                 is_combat: false,
             },
@@ -3684,6 +3716,7 @@ mod tests {
                 source_id: p1_source,
                 source_controller: PlayerId(1),
                 target: TargetRef::Player(PlayerId(0)),
+                target_controller: PlayerId(0),
                 amount: 9,
                 is_combat: false,
             },
@@ -3736,6 +3769,7 @@ mod tests {
             source_id: damage_source,
             source_controller: PlayerId(0),
             target: TargetRef::Player(PlayerId(1)),
+            target_controller: PlayerId(1),
             amount: 4,
             is_combat: false,
         });
@@ -3756,6 +3790,71 @@ mod tests {
         assert_eq!(resolve_quantity(&state, &your_max, PlayerId(0), scoping), 4);
         // P1 sees nothing — they didn't control the source when the damage occurred.
         assert_eq!(resolve_quantity(&state, &your_max, PlayerId(1), scoping), 0);
+    }
+
+    #[test]
+    fn parameterized_damage_dealt_this_turn_uses_target_lki_controller_after_control_change() {
+        let mut state = GameState::new_two_player(42);
+        let scoping = create_object(
+            &mut state,
+            CardId(1000),
+            PlayerId(0),
+            "Scope".to_string(),
+            Zone::Battlefield,
+        );
+        let damage_source = create_object(
+            &mut state,
+            CardId(1001),
+            PlayerId(0),
+            "Prodigal Pyromancer".to_string(),
+            Zone::Battlefield,
+        );
+        let target = create_object(
+            &mut state,
+            CardId(1002),
+            PlayerId(1),
+            "Bear".to_string(),
+            Zone::Battlefield,
+        );
+        state.damage_dealt_this_turn.push(DamageRecord {
+            source_id: damage_source,
+            source_controller: PlayerId(0),
+            target: TargetRef::Object(target),
+            target_controller: PlayerId(1),
+            amount: 3,
+            is_combat: false,
+        });
+        state.objects.get_mut(&target).unwrap().controller = PlayerId(0);
+
+        let damage_to_opponent_controlled_target = QuantityExpr::Ref {
+            qty: QuantityRef::DamageDealtThisTurn {
+                source: Box::new(TargetFilter::Any),
+                target: Box::new(TargetFilter::Typed(
+                    TypedFilter::default().controller(ControllerRef::Opponent),
+                )),
+                aggregate: AggregateFunction::Sum,
+                group_by: None,
+            },
+        };
+
+        assert_eq!(
+            resolve_quantity(
+                &state,
+                &damage_to_opponent_controlled_target,
+                PlayerId(0),
+                scoping,
+            ),
+            3
+        );
+        assert_eq!(
+            resolve_quantity(
+                &state,
+                &damage_to_opponent_controlled_target,
+                PlayerId(1),
+                scoping,
+            ),
+            0
+        );
     }
 
     /// Audit M2 backward-compat: a JSON snapshot of the pre-parameterization
