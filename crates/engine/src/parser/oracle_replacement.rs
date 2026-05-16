@@ -1536,16 +1536,29 @@ fn parse_enters_with_counters(
         counter_entries.unwrap_or_else(|| vec![(counter_type, count_expr)]),
     );
 
-    // Determine valid_card filter: self vs other creatures
-    // Strip "each other " or "other " prefix, then delegate to parse_type_phrase
-    // which handles non-X, controller, "of the chosen type", etc.
+    // Determine valid_card filter: self vs other permanents.
+    // CR 614.1c: "each other Angel you control enters with ..." is a
+    // replacement effect that applies to a general subset of permanents, not
+    // the source. Strip the "each other " / "other " prefix (nom), then let
+    // `parse_type_phrase` be the detector: accept the subject iff the parse
+    // yields a typed filter with a concrete type/subtype (not the `Any`
+    // fallback). `parse_type_phrase` already classifies "creature",
+    // "permanent", AND subtypes ("Angel", "Sliver", ...) — so subtype-only
+    // subjects are no longer rejected by a hardcoded "creature"/"permanent"
+    // keyword guard. A non-type subject parses to the `[Any]` fallback and is
+    // rejected, falling through to the `SelfRef` self-ETB branch.
     let subject = alt((tag::<_, _, OracleError<'_>>("each other "), tag("other ")))
         .parse(work_text)
         .ok()
         .map(|(rest, _)| rest)
         .filter(|s| {
-            nom_primitives::scan_contains(s, "creature")
-                || nom_primitives::scan_contains(s, "permanent")
+            let (filter, _) = parse_type_phrase(s);
+            matches!(
+                &filter,
+                TargetFilter::Typed(TypedFilter { type_filters, .. })
+                    if !type_filters.is_empty()
+                        && type_filters.as_slice() != [TypeFilter::Any]
+            )
         });
     let valid_card = if let Some(subject_text) = subject {
         let (filter, _) = parse_type_phrase(subject_text);
@@ -5494,6 +5507,72 @@ mod tests {
                 ..
             } if *counter_type == CounterType::Plus1Plus1
         ));
+    }
+
+    /// Issue #204 — Giada, Font of Hope. "Each other Angel you control enters
+    /// with an additional +1/+1 counter on it for each Angel you already
+    /// control." Defect #1: the subject `"Angel you control"` is a subtype-only
+    /// phrase; the old `creature`/`permanent` keyword guard rejected it, so
+    /// `valid_card` fell back to `SelfRef`. Defect #2: the `" already"` adverb
+    /// defeated the `for each` count combinator, leaving `count` a `Fixed`.
+    #[test]
+    fn giada_other_angels_enter_with_for_each_angel_counter() {
+        let def = parse_replacement_line(
+            "Each other Angel you control enters with an additional +1/+1 counter \
+             on it for each Angel you already control.",
+            "Giada, Font of Hope",
+        )
+        .unwrap();
+
+        // Defect #1: subtype-only subject accepted → external ChangeZone.
+        assert_eq!(def.event, ReplacementEvent::ChangeZone);
+        assert_eq!(
+            def.valid_card,
+            Some(TargetFilter::Typed(TypedFilter {
+                type_filters: vec![TypeFilter::Subtype("Angel".to_string())],
+                controller: Some(ControllerRef::You),
+                properties: vec![FilterProp::Another],
+            })),
+            "subtype-only subject must produce a Typed Angel filter with Another, not SelfRef"
+        );
+
+        // Defect #2: the count is a dynamic ObjectCount over Angels you control,
+        // NOT the Fixed { value: 1 } fallback.
+        match *def.execute.as_ref().unwrap().effect {
+            Effect::PutCounter {
+                ref counter_type,
+                count:
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::ObjectCount { ref filter },
+                    },
+                ..
+            } => {
+                assert_eq!(*counter_type, CounterType::Plus1Plus1);
+                assert_eq!(
+                    *filter,
+                    TargetFilter::Typed(TypedFilter {
+                        type_filters: vec![TypeFilter::Subtype("Angel".to_string())],
+                        controller: Some(ControllerRef::You),
+                        properties: Vec::new(),
+                    })
+                );
+            }
+            ref other => panic!("expected PutCounter with Ref ObjectCount count, got {other:?}"),
+        }
+    }
+
+    /// Negative control for #204: a self-referential `~ enters with` line still
+    /// resolves to a `SelfRef` valid_card and the `Moved` event — the subject
+    /// acceptance check only fires after an explicit "each other" / "other".
+    #[test]
+    fn self_enters_with_counter_still_selfref() {
+        let def = parse_replacement_line(
+            "Giada, Font of Hope enters with a +1/+1 counter on it.",
+            "Giada, Font of Hope",
+        )
+        .unwrap();
+        assert_eq!(def.event, ReplacementEvent::Moved);
+        assert_eq!(def.valid_card, Some(TargetFilter::SelfRef));
     }
 
     #[test]
