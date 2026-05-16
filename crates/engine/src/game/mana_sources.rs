@@ -1222,7 +1222,7 @@ pub(crate) fn aura_taps_for_mana_sources_for_land(
                 player_id: controller,
                 mana_type: ManaType::Colorless,
                 source_id: land_id,
-                tapped_for_mana: true,
+                tap_state: crate::types::events::ManaTapState::FromTap,
             };
             if super::trigger_matchers::match_taps_for_mana(
                 &synthetic_event,

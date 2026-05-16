@@ -3213,7 +3213,7 @@ mod tests {
             player_id: PlayerId(0),
             mana_type: ManaType::Green,
             source_id: ObjectId(1),
-            tapped_for_mana: true,
+            tap_state: crate::types::events::ManaTapState::FromTap,
         }
     }
 
@@ -3333,7 +3333,7 @@ mod tests {
             player_id: PlayerId(0),
             mana_type: ManaType::Red,
             source_id: ObjectId(1),
-            tapped_for_mana: true,
+            tap_state: crate::types::events::ManaTapState::FromTap,
         };
         let mut events = Vec::new();
 
@@ -3395,7 +3395,7 @@ mod tests {
                 player_id: PlayerId(1),
                 mana_type: ManaType::Red,
                 source_id: land,
-                tapped_for_mana: true,
+                tap_state: crate::types::events::ManaTapState::FromTap,
             }],
         );
 
@@ -3467,7 +3467,7 @@ mod tests {
                 player_id: PlayerId(1),
                 mana_type: ManaType::Green,
                 source_id: land,
-                tapped_for_mana: true,
+                tap_state: crate::types::events::ManaTapState::FromTap,
             }],
         );
         assert_eq!(state.stack.len(), 1);

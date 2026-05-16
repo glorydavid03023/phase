@@ -4,7 +4,7 @@ use crate::types::ability::{
     TargetRef,
 };
 use crate::types::counter::CounterType;
-use crate::types::events::GameEvent;
+use crate::types::events::{GameEvent, ManaTapState};
 use crate::types::game_state::{GameState, WaitingFor};
 use crate::types::identifiers::ObjectId;
 use crate::types::player::PlayerId;
@@ -232,7 +232,7 @@ pub(super) fn handle_replacement_choice(
                                 player_id,
                                 mana_type,
                                 source_id,
-                                tapped_for_mana,
+                                tap_state: ManaTapState::from_tap(tapped_for_mana),
                             });
                         }
                     }

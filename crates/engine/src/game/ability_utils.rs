@@ -926,7 +926,11 @@ fn collect_target_slots(
         if ability.target_choice_timing == TargetChoiceTiming::Stack {
             if let Some(filter) = triggers::extract_target_filter_from_effect(&ability.effect) {
                 let legal_targets = legal_choices_for_ability_filter(state, ability, filter, slots);
-                if legal_targets.is_empty() && !ability.optional_targeting {
+                // CR 601.2c: An "up to N" ability (`multi_target.min == 0`) — or an
+                // ability-wide "up to one" (`optional_targeting`) — may legally
+                // choose zero targets, so an empty legal-target set is acceptable.
+                // Only abilities that require at least one target error out here.
+                if legal_targets.is_empty() && !ability.targeting_is_optional() {
                     return Err(EngineError::ActionNotAllowed(
                         "No legal targets available".to_string(),
                     ));

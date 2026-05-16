@@ -4386,18 +4386,15 @@ fn can_pay_mana_cost_after_auto_tap_with_context(
         excluded_sources,
     );
 
-    // CR 605.1b: A `TapsForMana` triggered mana ability (Fertile Ground / Wild
-    // Growth / Utopia Sprawl class) resolves inline and adds bonus mana to the
-    // pool when the enchanted land is tapped for mana. The auto-tap helper
-    // emits the `ManaAdded` events but does not run the trigger pipeline; in
-    // the production action flow `run_post_action_pipeline` later processes
-    // them, but this affordability simulation is a one-shot clone — without an
-    // explicit pipeline run the aura's bonus mana would never reach the
-    // simulated pool, causing AI legal-actions to skip a cast that the player
-    // would actually be able to pay (e.g. Plains + Wild Growth → cost {1}{G}).
-    if !tap_events.is_empty() {
-        super::triggers::process_triggers(&mut simulated, &tap_events);
-    }
+    // CR 605.4a: A `TapsForMana` triggered mana ability (Leyline of Abundance /
+    // Fertile Ground / Wild Growth / Utopia Sprawl class) resolves inline,
+    // adding bonus mana to the pool, when a source is tapped for mana. The
+    // auto-tap helper emits the `ManaAdded` events but does not resolve those
+    // triggers; this affordability preview and the real cost-payment path share
+    // `resolve_tap_mana_triggers_inline` as the single authority so they cannot
+    // diverge (a divergence was the original bug — the preview said a spell was
+    // castable while the real cast failed "Cannot pay mana cost").
+    super::triggers::resolve_tap_mana_triggers_inline(&mut simulated, &mut tap_events, 0);
 
     let any_color = player_can_spend_as_any_color_for_spell(&simulated, player, source_id);
     // CR 107.4f + CR 118.3 + CR 119.8: Include the payer's Phyrexian life
@@ -4507,9 +4504,10 @@ pub(super) fn can_pay_effect_mana_cost_after_auto_tap(
         Some(source_id),
         Some(&effect_ctx),
     );
-    if !tap_events.is_empty() {
-        super::triggers::process_triggers(&mut simulated, &tap_events);
-    }
+    // CR 605.4a: Resolve coupled `TapsForMana` triggered mana abilities inline
+    // so the bonus mana is in the simulated pool — same authority the real
+    // payment path uses, keeping preview and execution in lockstep.
+    super::triggers::resolve_tap_mana_triggers_inline(&mut simulated, &mut tap_events, 0);
 
     let any_color = player_can_spend_as_any_color_for_optional_spell(&simulated, player, None);
     let max_life = super::life_costs::max_phyrexian_life_payments(&simulated, player);
@@ -4771,6 +4769,7 @@ pub(super) fn pay_effect_mana_cost(
     }
 
     let effect_ctx = PaymentContext::Effect;
+    let events_before = events.len();
     super::casting_costs::auto_tap_mana_sources_with_context(
         state,
         player,
@@ -4779,6 +4778,9 @@ pub(super) fn pay_effect_mana_cost(
         Some(source_id),
         Some(&effect_ctx),
     );
+    // CR 605.4a: Resolve coupled `TapsForMana` triggered mana abilities inline
+    // so their bonus mana is in the pool before the affordability check.
+    super::triggers::resolve_tap_mana_triggers_inline(state, events, events_before);
 
     {
         let player_data = state
@@ -4869,6 +4871,7 @@ fn auto_tap_and_pay_cost_excluding(
     events: &mut Vec<GameEvent>,
     excluded_sources: &HashSet<ObjectId>,
 ) -> Result<Vec<crate::types::mana::ManaUnit>, EngineError> {
+    let events_before = events.len();
     super::casting_costs::auto_tap_mana_sources_with_context_excluding(
         state,
         player,
@@ -4878,6 +4881,11 @@ fn auto_tap_and_pay_cost_excluding(
         ctx,
         excluded_sources,
     );
+    // CR 605.4a: Resolve coupled `TapsForMana` triggered mana abilities inline
+    // so their bonus mana is in the pool before the affordability check (and
+    // before the spend). The post-action trigger scan skips what is resolved
+    // here via the `FromTapTriggersResolved` marker — no double-fire.
+    super::triggers::resolve_tap_mana_triggers_inline(state, events, events_before);
 
     {
         let player_data = state

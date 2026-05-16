@@ -3,7 +3,7 @@ use thiserror::Error;
 
 use crate::types::ability::{EffectKind, KeywordAction, TargetRef};
 use crate::types::actions::GameAction;
-use crate::types::events::{BendingType, GameEvent};
+use crate::types::events::{BendingType, GameEvent, ManaTapState};
 use crate::types::game_state::{
     ActionResult, AutoPassMode, AutoPassRequest, ConvokeMode, GameState, StackEntry,
     StackEntryKind, WaitingFor,
@@ -2396,7 +2396,7 @@ fn apply_action(
                     player_id: *player,
                     mana_type: resolved_mana_type,
                     source_id: object_id,
-                    tapped_for_mana: false,
+                    tap_state: ManaTapState::NotFromTap,
                 });
             }
             if tapped_creature_for_convoke {

@@ -1656,15 +1656,17 @@ pub(super) fn match_taps_for_mana(
     if let GameEvent::ManaAdded {
         player_id,
         source_id: mana_source,
-        tapped_for_mana,
+        tap_state,
         ..
     } = event
     {
         // Only fire for actual mana ability activations (tap costs), not for mana
         // produced by triggered abilities, effects, convoke, or doublers.
         // This prevents infinite loops (e.g., Badgermole Cub's trigger producing
-        // mana that re-triggers itself).
-        if !tapped_for_mana {
+        // mana that re-triggers itself). Fires for both `FromTap` and
+        // `FromTapTriggersResolved` — the post-action scan's double-resolution
+        // guard (CR 605.4a) handles already-resolved triggered mana abilities.
+        if !tap_state.tapped_for_mana() {
             return false;
         }
 
@@ -2515,7 +2517,7 @@ mod tests {
         TypeFilter, TypedFilter,
     };
     use crate::types::card_type::CoreType;
-    use crate::types::events::{GameEvent, PlayerActionKind};
+    use crate::types::events::{GameEvent, ManaTapState, PlayerActionKind};
     use crate::types::game_state::{
         CastingVariant, GameState, StackEntry, StackEntryKind, ZoneChangeRecord,
     };
@@ -3717,7 +3719,7 @@ mod tests {
             player_id: PlayerId(0),
             mana_type: crate::types::mana::ManaType::Green,
             source_id: source,
-            tapped_for_mana: true,
+            tap_state: ManaTapState::FromTap,
         };
         let trigger = make_trigger(TriggerMode::TapsForMana);
         assert!(match_taps_for_mana(&event, &trigger, source, &state));
@@ -3746,7 +3748,7 @@ mod tests {
             player_id: PlayerId(0),
             mana_type: crate::types::mana::ManaType::Green,
             source_id: enchanted_land,
-            tapped_for_mana: true,
+            tap_state: ManaTapState::FromTap,
         };
 
         let mut trigger = make_trigger(TriggerMode::TapsForMana);
@@ -3783,7 +3785,7 @@ mod tests {
             player_id: PlayerId(1),
             mana_type: crate::types::mana::ManaType::Green,
             source_id: tapped_land,
-            tapped_for_mana: true,
+            tap_state: ManaTapState::FromTap,
         };
 
         let mut trigger = make_trigger(TriggerMode::TapsForMana);
@@ -3801,7 +3803,7 @@ mod tests {
             player_id: PlayerId(0),
             mana_type: crate::types::mana::ManaType::Green,
             source_id: source,
-            tapped_for_mana: false,
+            tap_state: ManaTapState::NotFromTap,
         };
         let trigger = make_trigger(TriggerMode::TapsForMana);
         assert!(!match_taps_for_mana(&event, &trigger, source, &state));

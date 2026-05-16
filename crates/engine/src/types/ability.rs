@@ -9441,6 +9441,21 @@ impl ResolvedAbility {
         }
     }
 
+    /// CR 608.2c: Stamp `context.optional_effect_performed` across the local
+    /// ability chain. Used when an optional effect is accepted after its prompt
+    /// suspended the parent chain — the stashed "If you do" continuation was
+    /// captured before the choice, so its context must be updated retroactively
+    /// for `IfYouDo` / `IfAPlayerDoes` gates to evaluate correctly.
+    pub fn set_optional_effect_performed_recursive(&mut self, performed: bool) {
+        self.context.optional_effect_performed = performed;
+        if let Some(sub) = self.sub_ability.as_mut() {
+            sub.set_optional_effect_performed_recursive(performed);
+        }
+        if let Some(else_branch) = self.else_ability.as_mut() {
+            else_branch.set_optional_effect_performed_recursive(performed);
+        }
+    }
+
     pub fn set_original_controller_recursive(&mut self, player: PlayerId) {
         self.original_controller = Some(player);
         if let Some(sub) = self.sub_ability.as_mut() {
@@ -9501,6 +9516,16 @@ impl ResolvedAbility {
                 _ => None,
             })
             .unwrap_or(self.controller)
+    }
+
+    /// CR 601.2c: Whether this ability permits choosing zero targets — i.e. an
+    /// empty legal-target set is acceptable rather than an error. True when the
+    /// ability-wide `optional_targeting` ("up to one") flag is set, or when its
+    /// `multi_target` spec ("up to N") has a minimum of zero. Both fields encode
+    /// the same "zero targets is legal" fact, so target-slot collection must
+    /// honor either.
+    pub fn targeting_is_optional(&self) -> bool {
+        self.optional_targeting || self.multi_target.as_ref().is_some_and(|spec| spec.min == 0)
     }
 }
 

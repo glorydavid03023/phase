@@ -7,7 +7,7 @@ use crate::types::ability::{
     TypedFilter,
 };
 use crate::types::card_type::CoreType;
-use crate::types::events::GameEvent;
+use crate::types::events::{GameEvent, ManaTapState};
 use crate::types::game_state::{
     DelayedTrigger, DistributionUnit, GameState, MayTriggerOrigin, StackEntry, StackEntryKind,
     TargetSelectionConstraint,
@@ -251,6 +251,27 @@ fn collect_matching_triggers(
             // tracking (`AbilityCondition::NthResolutionThisTurn`) can identify
             // "this ability" at resolution time.
             ability.ability_index = Some(trig_idx);
+            // CR 605.4a: A `TapsForMana` triggered mana ability coupled to an
+            // auto-tap event was already resolved inline during cost payment
+            // (`resolve_tap_mana_triggers_inline`), which flipped the event to
+            // `FromTapTriggersResolved`. The deferred scan must not resolve it
+            // again. Gated on `TapsForMana` mode so `ManaAdded`-mode mana
+            // abilities (not resolved at payment) still fire, on the resolved
+            // marker so manual `TapLandForMana` taps (still `FromTap`) still
+            // fire, and on `is_triggered_mana_ability` so non-mana `TapsForMana`
+            // triggers still fire (CR 603.3).
+            if matches!(trig_def.mode, TriggerMode::TapsForMana)
+                && matches!(
+                    event,
+                    GameEvent::ManaAdded {
+                        tap_state: ManaTapState::FromTapTriggersResolved,
+                        ..
+                    }
+                )
+                && super::mana_abilities::is_triggered_mana_ability(&ability, Some(event))
+            {
+                continue;
+            }
             let (modal, mode_abilities) = trig_def
                 .execute
                 .as_ref()
@@ -427,6 +448,94 @@ fn event_is_suppressed_by_static_triggers(state: &GameState, event: &GameEvent) 
         }
     }
     false
+}
+
+/// CR 605.4a: Resolve `TapsForMana` triggered mana abilities inline, immediately
+/// after the mana abilities that triggered them.
+///
+/// The cost-payment path calls this right after auto-tapping mana sources so the
+/// bonus mana from Leyline of Abundance / Wild Growth-class permanents is in the
+/// pool before the affordability check. A triggered mana ability (CR 605.1b)
+/// does not use the stack (CR 605.4a) — it resolves at once.
+///
+/// Scope is restricted to triggered *mana* abilities. Non-mana `TapsForMana`
+/// triggers are deliberately left untouched so they go on the stack via the
+/// deferred post-action trigger scan (CR 603.3) rather than being placed there
+/// mid-payment, where a modal/targeted trigger could corrupt the in-flight cast.
+///
+/// `events[events_before..]` is the batch produced by auto-tap. Every freshly
+/// produced `FromTap` `ManaAdded` event in that range is flipped to
+/// `FromTapTriggersResolved`; the post-action scan's double-resolution guard
+/// keys off that marker to skip the triggered mana abilities resolved here.
+pub(super) fn resolve_tap_mana_triggers_inline(
+    state: &mut GameState,
+    events: &mut Vec<GameEvent>,
+    events_before: usize,
+) {
+    // Capture the scan bound before resolution — triggered mana abilities append
+    // their own bonus `ManaAdded` events (CR 605.4a), which must not be rescanned.
+    let scan_end = events.len();
+
+    // Pass 1: resolve every coupled triggered mana ability for each tap event.
+    for idx in events_before..scan_end {
+        let tap_event = match events.get(idx) {
+            Some(
+                ev @ GameEvent::ManaAdded {
+                    tap_state: ManaTapState::FromTap,
+                    ..
+                },
+            ) => ev.clone(),
+            _ => continue,
+        };
+        // CR 605.1b: Collect every `TapsForMana` triggered mana ability coupled
+        // to this tap. `match_taps_for_mana` is the single matcher authority and
+        // `is_triggered_mana_ability` the single CR 605.1b classifier — the same
+        // predicate the post-action scan's skip guard uses, so "resolved here"
+        // and "skipped there" cannot diverge.
+        let mut coupled: Vec<ResolvedAbility> = Vec::new();
+        for (&obj_id, obj) in state.objects.iter() {
+            if obj.zone != Zone::Battlefield {
+                continue;
+            }
+            for (trig_idx, trig_def) in
+                super::functioning_abilities::active_trigger_definitions(state, obj)
+            {
+                if !matches!(trig_def.mode, TriggerMode::TapsForMana) {
+                    continue;
+                }
+                if !super::trigger_matchers::match_taps_for_mana(
+                    &tap_event, trig_def, obj_id, state,
+                ) {
+                    continue;
+                }
+                let mut ability = build_triggered_ability(state, trig_def, obj_id, obj.controller);
+                ability.ability_index = Some(trig_idx);
+                if super::mana_abilities::is_triggered_mana_ability(&ability, Some(&tap_event)) {
+                    coupled.push(ability);
+                }
+            }
+        }
+        for ability in coupled {
+            super::mana_abilities::resolve_triggered_mana_ability_inline(
+                state,
+                &ability,
+                Some(&tap_event),
+                events,
+            );
+        }
+    }
+
+    // Pass 2: mark the auto-tap events resolved. The post-action trigger scan's
+    // double-resolution guard skips `is_triggered_mana_ability` `TapsForMana`
+    // triggers on `FromTapTriggersResolved` events; non-mana `TapsForMana`
+    // triggers still match and fire there (CR 603.3).
+    for ev in &mut events[events_before..scan_end] {
+        if let GameEvent::ManaAdded { tap_state, .. } = ev {
+            if matches!(tap_state, ManaTapState::FromTap) {
+                *tap_state = ManaTapState::FromTapTriggersResolved;
+            }
+        }
+    }
 }
 
 /// Process events and place triggered abilities on the stack in APNAP order.
@@ -2929,7 +3038,7 @@ pub mod tests {
     };
     use crate::types::actions::GameAction;
     use crate::types::card_type::CoreType;
-    use crate::types::events::GameEvent;
+    use crate::types::events::{GameEvent, ManaTapState};
     use crate::types::game_state::{
         DelayedTrigger, DistributionUnit, GameState, SpellCastRecord, StackEntry, StackEntryKind,
         WaitingFor, ZoneChangeRecord,
@@ -7857,7 +7966,7 @@ pub mod tests {
             player_id: PlayerId(0),
             mana_type: crate::types::mana::ManaType::Green,
             source_id: forest,
-            tapped_for_mana: true,
+            tap_state: ManaTapState::FromTap,
         }];
 
         process_triggers(&mut state, &events);
@@ -7968,7 +8077,7 @@ pub mod tests {
             player_id: PlayerId(0),
             mana_type: crate::types::mana::ManaType::Green,
             source_id: forest,
-            tapped_for_mana: true,
+            tap_state: ManaTapState::FromTap,
         }];
 
         process_triggers(&mut state, &events);
@@ -8063,7 +8172,7 @@ pub mod tests {
             player_id: PlayerId(0),
             mana_type: crate::types::mana::ManaType::Green,
             source_id: forest,
-            tapped_for_mana: true,
+            tap_state: ManaTapState::FromTap,
         }];
 
         process_triggers(&mut state, &events);

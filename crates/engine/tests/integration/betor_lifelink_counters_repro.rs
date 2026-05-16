@@ -30,7 +30,7 @@
 //!     end step begins.
 //!   - CR 601.2c: each effect in a chained ability is assigned its own targets.
 
-use super::rules::{run_combat, GameScenario, Phase, WaitingFor, P0, P1};
+use super::rules::{run_combat, GameScenario, Phase, WaitingFor, Zone, P0, P1};
 use engine::types::ability::TargetRef;
 use engine::types::actions::GameAction;
 use engine::types::counter::CounterType;
@@ -144,27 +144,25 @@ fn betor_end_step_counters_equal_lifelink_gain_no_doubler() {
 }
 
 /// Issue #321 core regression: when BOTH end-step trigger slots are filled,
-/// the `PutCounter` effect must apply ONLY to its own slot-0 target.
+/// the slot allocator must give each chained effect its own target slot.
 ///
-/// This is the test that genuinely reproduces #321: the doubling occurs ONLY
-/// when slot 1 (the `ChangeZone` sub-ability target) holds a `Some` target.
-/// With both slots filled, `ability.targets` becomes `[receiver, slot1_pick]`;
-/// the pre-fix allocator set `current_slots = total - sub_chain_minimum`
-/// (`2 - 0 = 2`), so the `PutCounter` node claimed BOTH targets and
-/// `resolve_add` applied the counters once per entry — putting the +1/+1
-/// counters on the slot-1 creature as well as the receiver. (When slot 1 is
-/// *declined*, the `None` is dropped before `ability.targets` is built, so the
-/// over-claim never triggers — which is why a decline-slot-1 test cannot
-/// reproduce the bug.)
+/// The end-step trigger is a two-effect chain — `PutCounter` (slot 0) then a
+/// `ChangeZone` graveyard-return sub-ability (slot 1), both "up to one". The
+/// pre-fix allocator set `current_slots = total_slots - sub_chain_minimum`
+/// (`2 - 0 = 2`), so the `PutCounter` node greedily claimed BOTH chosen
+/// targets and the `ChangeZone` node was starved of its own. With the fix
+/// each node is capped at its own resolved `multi_target` max (CR 601.2c).
 ///
-/// On the parsed Betor AST the `ChangeZone` sub-ability's target filter is a
-/// plain `Typed[Creature]` with no zone scoping, so `collect_target_slots`
-/// surfaces battlefield creatures as slot-1 legal targets. The test selects a
-/// distinct battlefield creature for slot 1. `ChangeZone { origin: Graveyard }`
-/// of an object already on the battlefield is a no-op for zone movement; the
-/// load-bearing assertion is the COUNTER attribution — slot 1's creature must
-/// receive zero +1/+1 counters because the slot-0 `PutCounter` effect must not
-/// claim it.
+/// Reproduction with the (correct) zone-scoped parse: the `ChangeZone` filter
+/// is `InZone: Graveyard` with a `mana value <= life lost this turn` cap, so
+/// slot 1 targets a creature *card in the graveyard* (CR 404). P0 loses no
+/// life here, so the cap is 0 and a mana-value-0 creature card qualifies.
+///
+/// The load-bearing assertion is that the slot-1 graveyard creature actually
+/// returns to the battlefield: that proves the `ChangeZone` node received its
+/// own target rather than having both targets swallowed by `PutCounter`. On
+/// the pre-fix allocator `ChangeZone` was starved, so the creature never left
+/// the graveyard.
 #[test]
 fn betor_put_counter_does_not_leak_into_second_trigger_slot() {
     let mut scenario = GameScenario::new();
@@ -174,8 +172,13 @@ fn betor_put_counter_does_not_leak_into_second_trigger_slot() {
         .add_creature_from_oracle(P0, "Betor, Ancestor's Voice", 3, 3, BETOR_ORACLE)
         .id();
     let receiver = scenario.add_creature(P0, "Receiver", 1, 1).id();
-    // A distinct P0 battlefield creature — the slot-1 (`ChangeZone`) target.
-    let slot_one_pick = scenario.add_creature(P0, "Slot One Pick", 2, 2).id();
+    // Betor's `ChangeZone` sub-ability targets a creature card in the
+    // graveyard with mana value <= life lost this turn. P0 loses no life in
+    // this scenario, so the cap is 0 — a mana-value-0 creature card (the
+    // builder default) qualifies.
+    let gy_creature = scenario
+        .add_creature_to_graveyard(P0, "Graveyard Creature", 2, 2)
+        .id();
     scenario.add_creature(P1, "Blocker", 3, 3);
 
     let mut runner = scenario.build();
@@ -184,10 +187,9 @@ fn betor_put_counter_does_not_leak_into_second_trigger_slot() {
 
     advance_to_end_step_trigger(&mut runner);
 
-    // Slot 0 → receiver, slot 1 → a distinct creature. Both choices MUST be
-    // `Some` for this test to exercise the bug; if a slot does not offer the
-    // intended target the test fails loudly rather than silently degrading
-    // into the (non-reproducing) decline path.
+    // Slot 0 → the battlefield receiver, slot 1 → the graveyard creature.
+    // Both choices MUST be `Some` for this test to exercise the bug; if a
+    // slot does not offer the intended target the test fails loudly.
     let mut slot_choices: Vec<(usize, Option<TargetRef>)> = Vec::new();
     let mut guard = 0;
     while matches!(
@@ -212,7 +214,7 @@ fn betor_put_counter_does_not_leak_into_second_trigger_slot() {
                 let want = if slot_index == 0 {
                     receiver
                 } else {
-                    slot_one_pick
+                    gy_creature
                 };
                 let legal = &target_slots
                     .get(slot_index)
@@ -253,27 +255,46 @@ fn betor_put_counter_does_not_leak_into_second_trigger_slot() {
     );
     assert_eq!(
         slot_choices[1],
-        (1, Some(TargetRef::Object(slot_one_pick))),
-        "slot 1 must be filled with the distinct slot-1 creature — without a \
-         filled slot 1 the bug does not reproduce"
+        (1, Some(TargetRef::Object(gy_creature))),
+        "slot 1 must be filled with the graveyard creature — without a filled \
+         slot 1 the bug does not reproduce"
     );
 
     runner.advance_until_stack_empty();
 
-    // The PutCounter slot-0 target receives exactly 3 counters.
+    // Slot 0: the receiver gets exactly 3 +1/+1 counters (= life gained).
     assert_eq!(
         p1p1_counters(&runner, receiver),
         3,
         "slot-0 PutCounter target must get exactly 3 +1/+1 counters"
     );
-    // The slot-1 target must receive ZERO counters — the PutCounter effect
-    // must not leak into the second trigger slot. This is the assertion that
-    // FAILS on the pre-fix allocator (where the slot-1 creature also received
-    // 3 counters because the PutCounter node over-claimed both slots).
+
+    // Slot 1: the `ChangeZone` node must have received its own target — so the
+    // graveyard creature is now on the battlefield. The zone move makes it a
+    // new object (CR 400.7), so it is located by name. On the pre-fix
+    // allocator `PutCounter` swallowed BOTH targets, starving `ChangeZone`, so
+    // the creature never left the graveyard.
+    let returned = runner
+        .state()
+        .objects
+        .values()
+        .find(|o| o.name == "Graveyard Creature" && o.zone == Zone::Battlefield);
+    assert!(
+        returned.is_some(),
+        "slot-1 ChangeZone must return the graveyard creature to the \
+         battlefield — the slot allocator must give the ChangeZone node its \
+         own target rather than letting PutCounter claim both (CR 601.2c)"
+    );
+    // And no +1/+1 counters leaked onto the returned creature.
     assert_eq!(
-        p1p1_counters(&runner, slot_one_pick),
+        returned
+            .unwrap()
+            .counters
+            .get(&CounterType::Plus1Plus1)
+            .copied()
+            .unwrap_or(0),
         0,
-        "slot-1 target must NOT receive +1/+1 counters — the PutCounter effect \
-         must resolve against only its own slot-0 target (CR 601.2c)"
+        "the returned creature must carry no +1/+1 counters — the slot-0 \
+         PutCounter effect must resolve against only its own target (CR 601.2c)"
     );
 }

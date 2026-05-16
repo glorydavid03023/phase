@@ -22,6 +22,52 @@ fn default_nth_in_turn() -> u32 {
     1
 }
 
+/// CR 605.1a + CR 605.1b + CR 605.4a: Records whether a `ManaAdded` event was
+/// produced by tapping a mana source, and whether the coupled `TapsForMana`
+/// triggered mana abilities have already been resolved.
+///
+/// A triggered mana ability (CR 605.1b) resolves immediately after the mana
+/// ability that triggered it, without using the stack (CR 605.4a). During an
+/// auto-tapped cost payment the engine resolves those triggers inline so the
+/// bonus mana is available for the affordability check; `FromTapTriggersResolved`
+/// marks such events so the deferred post-action trigger scan does not resolve
+/// them a second time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ManaTapState {
+    /// Mana not produced by a tap — effects, triggers, convoke, doublers.
+    #[default]
+    NotFromTap,
+    /// Produced by tapping a source (CR 605.1a tap cost); coupled `TapsForMana`
+    /// triggered mana abilities have not yet been resolved.
+    FromTap,
+    /// Produced by tapping a source; coupled triggered mana abilities were
+    /// already resolved inline during cost payment (CR 605.4a).
+    FromTapTriggersResolved,
+}
+
+impl ManaTapState {
+    /// True when the mana was produced by tapping a source, regardless of
+    /// whether the coupled triggered mana abilities have been resolved yet.
+    pub fn tapped_for_mana(self) -> bool {
+        !matches!(self, ManaTapState::NotFromTap)
+    }
+
+    /// Pre-resolution tap state for a freshly produced mana event: `FromTap`
+    /// when the source was tapped, `NotFromTap` otherwise.
+    pub fn from_tap(tapped: bool) -> Self {
+        if tapped {
+            ManaTapState::FromTap
+        } else {
+            ManaTapState::NotFromTap
+        }
+    }
+
+    /// Serde `skip_serializing_if` predicate — omit the default from the wire.
+    fn is_not_from_tap(&self) -> bool {
+        matches!(self, ManaTapState::NotFromTap)
+    }
+}
+
 /// Avatar crossover: The four elemental bending types, tracked per-turn on each player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BendingType {
@@ -101,12 +147,12 @@ pub enum GameEvent {
         player_id: PlayerId,
         mana_type: ManaType,
         source_id: ObjectId,
-        /// True when the source was tapped as part of producing this mana
-        /// (mana ability with tap cost, or basic land tap). False for
-        /// sacrifice-only mana abilities, effects, triggers, convoke, and
-        /// doublers. Used by `TapsForMana` trigger matcher (CR 605.1a + CR 605.1b).
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        tapped_for_mana: bool,
+        /// Whether this mana came from tapping a source, and whether the
+        /// coupled `TapsForMana` triggered mana abilities (CR 605.1a + CR 605.1b)
+        /// have already been resolved. Consumed by the `TapsForMana` trigger
+        /// matcher and by the post-action trigger scan's double-resolution guard.
+        #[serde(default, skip_serializing_if = "ManaTapState::is_not_from_tap")]
+        tap_state: ManaTapState,
     },
     /// CR 500.5 + CR 703.4q: A single mana unit was emptied from a player's
     /// pool during the step-end empty event after the CR 616.1 replacement

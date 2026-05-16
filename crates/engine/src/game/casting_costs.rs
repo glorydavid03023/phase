@@ -3749,7 +3749,11 @@ pub(super) fn maybe_pause_for_phyrexian_choice(
 
     // CR 601.2h + CR 605: Auto-tap mana sources before shard-options computation so
     // the simulation reflects the actual post-tap pool.
+    let events_before = events.len();
     auto_tap_mana_sources(state, player, cost, events, Some(source_id));
+    // CR 605.4a: Resolve coupled `TapsForMana` triggered mana abilities inline so
+    // the bonus mana is in the pool before Phyrexian shard options are computed.
+    super::triggers::resolve_tap_mana_triggers_inline(state, events, events_before);
 
     let spell_meta = super::casting::build_spell_meta(state, player, source_id);
     let spell_ctx = spell_meta.as_ref().map(PaymentContext::Spell);
