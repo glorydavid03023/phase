@@ -3251,6 +3251,13 @@ pub struct GameState {
         with = "tuple_key_map"
     )]
     pub activated_abilities_this_game: HashMap<(ObjectId, usize), u32>,
+    /// CR 602.5b + CR 702.122: Vehicles whose crew ability has been activated this
+    /// turn. Populated on a successful crew announcement; read to enforce an
+    /// "Activate only once each turn" crew restriction. Crew is not an
+    /// `abilities[]` entry, so it cannot use `activated_abilities_this_turn`
+    /// (keyed by `(source_id, ability_index)`). Cleared at turn start.
+    #[serde(default)]
+    pub crew_activated_this_turn: HashSet<ObjectId>,
     /// CR 603.4: Per-ability per-turn resolution counter.
     /// Keyed by `(source_id, ability_index)` — identifies a specific printed
     /// ability on a specific source object. Incremented at the top of
@@ -3938,6 +3945,7 @@ impl GameState {
             triggers_fired_this_game: HashSet::new(),
             activated_abilities_this_turn: HashMap::new(),
             activated_abilities_this_game: HashMap::new(),
+            crew_activated_this_turn: HashSet::new(),
             ability_resolutions_this_turn: HashMap::new(),
             graveyard_cast_permissions_used: HashSet::new(),
             graveyard_cast_permissions_used_per_type: HashSet::new(),
@@ -4204,6 +4212,7 @@ impl PartialEq for GameState {
             && self.triggers_fired_this_game == other.triggers_fired_this_game
             && self.activated_abilities_this_turn == other.activated_abilities_this_turn
             && self.activated_abilities_this_game == other.activated_abilities_this_game
+            && self.crew_activated_this_turn == other.crew_activated_this_turn
             && self.ability_resolutions_this_turn == other.ability_resolutions_this_turn
             && self.graveyard_cast_permissions_used == other.graveyard_cast_permissions_used
             && self.graveyard_cast_permissions_used_per_type

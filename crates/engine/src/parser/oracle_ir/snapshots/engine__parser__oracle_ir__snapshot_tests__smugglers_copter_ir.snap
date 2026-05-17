@@ -96,7 +96,12 @@ expression: "&ir"
     },
     {
       "Keyword": {
-        "Crew": 1
+        "Crew": {
+          "power": 1,
+          "once_per_turn": {
+            "type": "Unlimited"
+          }
+        }
       }
     }
   ],

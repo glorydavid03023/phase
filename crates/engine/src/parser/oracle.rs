@@ -13,7 +13,7 @@ use crate::types::ability::{
     StaticCondition, StaticDefinition, TargetFilter, TriggerCondition, TriggerDefinition,
     TypedFilter,
 };
-use crate::types::keywords::{FlashbackCost, Keyword, KeywordKind};
+use crate::types::keywords::{ActivationCadence, FlashbackCost, Keyword, KeywordKind};
 use crate::types::mana::ManaCost;
 use crate::types::phase::Phase;
 use crate::types::player::PlayerId;
@@ -1500,6 +1500,18 @@ pub(crate) fn parse_oracle_ir(
         if lower_starts_with(&lower, "equip") && !lower_starts_with(&lower, "equipped") {
             if let Some(ability) = try_parse_equip(&line) {
                 result.abilities.push(ability);
+                i += 1;
+                continue;
+            }
+        }
+
+        // CR 702.122 + CR 602.5b: Crew with a trailing "Activate only once each
+        // turn." cadence sentence. Must run before the generic keyword-only
+        // extraction below — that path parses "Crew N" via `parse_keyword_from_oracle`
+        // and would consume the line, dropping the cadence sentence.
+        if lower_starts_with(&lower, "crew ") {
+            if let Some(crew_kw) = parse_crew_keyword(&lower) {
+                result.extracted_keywords.push(crew_kw);
                 i += 1;
                 continue;
             }
@@ -3609,6 +3621,48 @@ pub(super) fn strip_activated_constraints(text: &str) -> (String, ActivatedConst
     }
 
     (remaining, constraints)
+}
+
+/// CR 602.5b: Recognize a standalone `"Activate only once each turn"` cadence
+/// sentence — the trailing restriction on cards like Luxurious Locomotive's
+/// "Crew 1. Activate only once each turn." Pure / side-effect-free.
+///
+/// Only the standalone imperative sentence is recognized here. The conjoined
+/// `"activate only if [X] and only once each turn"` tail is a different
+/// grammatical shape with its own slicing requirement, handled by
+/// `strip_once_per_turn_suffix`; the strictly-once-ever `" and only once"`
+/// form is likewise that function's concern (it maps to
+/// `ActivationRestriction::OnlyOnce`, which `ActivationCadence` does not model).
+fn recognize_once_each_turn_cadence(text: &str) -> Option<ActivationCadence> {
+    let lower = text.trim().trim_end_matches('.').to_lowercase();
+    let matched = all_consuming(tag::<_, _, OracleError<'_>>("activate only once each turn"))
+        .parse(lower.as_str())
+        .is_ok();
+    matched.then_some(ActivationCadence::OncePerTurn)
+}
+
+/// CR 702.122 + CR 602.5b: Parse a Crew keyword line, capturing an optional
+/// trailing "Activate only once each turn." cadence sentence. MTGJSON supplies
+/// `Crew:N` without the cadence, so this re-extracts the full keyword from Oracle
+/// text when the line carries the standalone restriction sentence; the merge in
+/// `synthesis.rs` then replaces the cadence-less MTGJSON keyword. Returns `None`
+/// when there is no cadence sentence, leaving the MTGJSON keyword untouched.
+/// `lower` is the reminder-stripped, lowercased line.
+fn parse_crew_keyword(lower: &str) -> Option<Keyword> {
+    let (rest, _) = tag::<_, _, OracleError<'_>>("crew ").parse(lower).ok()?;
+    let (power, after_power) = parse_number(rest)?;
+    // After the power, the only modeled tail is the cadence sentence: "Crew N.
+    // Activate only once each turn." A bare "Crew N" (no tail) yields None so the
+    // MTGJSON keyword is kept as-is.
+    let tail = after_power.trim_start_matches(|c: char| c == '.' || c.is_whitespace());
+    if recognize_once_each_turn_cadence(tail) == Some(ActivationCadence::OncePerTurn) {
+        Some(Keyword::Crew {
+            power,
+            once_per_turn: ActivationCadence::OncePerTurn,
+        })
+    } else {
+        None
+    }
 }
 
 /// Strip "and only once each turn" / "and only once" compound suffixes from a condition_text
@@ -5880,6 +5934,72 @@ mod tests {
                 ActivationRestriction::AsSorcery,
                 ActivationRestriction::OnlyOnceEachTurn,
             ]
+        );
+    }
+
+    #[test]
+    fn crew_with_activate_only_once_each_turn_carries_cadence() {
+        // CR 702.122 + CR 602.5b: Luxurious Locomotive — "Crew 1. Activate only
+        // once each turn." The trailing cadence sentence upgrades the keyword's
+        // `once_per_turn` field from the cadence-less MTGJSON `Crew`.
+        let r = parse_with_keyword_names(
+            "Crew 1. Activate only once each turn. (Tap any number of creatures you control with total power 1 or more: This Vehicle becomes an artifact creature until end of turn.)",
+            "Luxurious Locomotive",
+            &["Crew"],
+            &["Artifact"],
+            &["Vehicle"],
+        );
+        assert!(
+            r.extracted_keywords.contains(&Keyword::Crew {
+                power: 1,
+                once_per_turn: ActivationCadence::OncePerTurn,
+            }),
+            "expected Crew {{ power: 1, once_per_turn: OncePerTurn }}, got {:?}",
+            r.extracted_keywords
+        );
+    }
+
+    #[test]
+    fn plain_crew_line_extracts_unlimited_cadence() {
+        // A bare "Crew N" line (no cadence sentence) parses as the default
+        // `Unlimited` cadence — no once-per-turn restriction is invented.
+        let r = parse_with_keyword_names(
+            "Crew 3 (Tap any number of creatures you control with total power 3 or more: This Vehicle becomes an artifact creature until end of turn.)",
+            "Smuggler's Copter",
+            &["Crew"],
+            &["Artifact"],
+            &["Vehicle"],
+        );
+        assert!(
+            r.extracted_keywords.contains(&Keyword::Crew {
+                power: 3,
+                once_per_turn: ActivationCadence::Unlimited,
+            }),
+            "a plain Crew line keeps the default Unlimited cadence; got {:?}",
+            r.extracted_keywords
+        );
+    }
+
+    #[test]
+    fn kirol_standalone_activate_only_once_each_turn_unchanged() {
+        // Regression witness: Kirol, Attentive First-Year — a NORMAL activated
+        // ability with a standalone "Activate only once each turn." sentence.
+        // Factoring `recognize_once_each_turn_cadence` must not disturb this
+        // path; the ability still carries `OnlyOnceEachTurn`.
+        let r = parse(
+            "Tap two untapped creatures you control: Copy target triggered ability you control. You may choose new targets for the copy. Activate only once each turn.",
+            "Kirol, Attentive First-Year",
+            &[],
+            &["Creature"],
+            &["Elf", "Druid"],
+        );
+        assert_eq!(r.abilities.len(), 1);
+        assert!(
+            r.abilities[0]
+                .activation_restrictions
+                .contains(&ActivationRestriction::OnlyOnceEachTurn),
+            "Kirol's activated ability must still carry OnlyOnceEachTurn; got {:?}",
+            r.abilities[0].activation_restrictions
         );
     }
 

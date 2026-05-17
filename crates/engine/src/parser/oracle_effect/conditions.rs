@@ -2109,6 +2109,26 @@ pub(super) fn try_nom_condition_as_ability_condition(
         });
     }
 
+    // CR 608.2c: "if you can't, [effect]" — the preceding mandatory instruction
+    // could not be performed (no object changed zone this way). This is
+    // prior-instruction-referential (it reports whether the preceding chained
+    // instruction succeeded), so — like the "you don't" / "this spell was cast
+    // from" arms above — it legitimately lives outside `parse_inner_condition`,
+    // which only yields game-state-fact `StaticCondition`s. `last_zone_changed_ids`
+    // is repopulated per-effect, so after the preceding effect resolves it holds
+    // exactly that effect's zone changes; `Not { ZoneChangedThisWay { Any } }` is
+    // true iff that effect moved nothing — i.e. "you can't".
+    if alt((tag::<_, _, OracleError<'_>>("you can't"), tag("you cannot")))
+        .parse(lower.as_str())
+        .is_ok()
+    {
+        return Some(AbilityCondition::Not {
+            condition: Box::new(AbilityCondition::ZoneChangedThisWay {
+                filter: TargetFilter::Any,
+            }),
+        });
+    }
+
     if let Ok((after_prefix, _)) =
         tag::<_, _, OracleError<'_>>("this spell was cast from ").parse(lower.as_str())
     {
@@ -2867,6 +2887,25 @@ mod tests {
         );
         // Non-comparison conditions yield None.
         assert_eq!(difference_expr(&AbilityCondition::IsYourTurn), None);
+    }
+
+    #[test]
+    fn if_you_cant_parses_as_not_zone_changed_this_way() {
+        // CR 608.2c: "if you can't, draw a card" — the gating condition on the
+        // already-parsed `Draw` must be `Not { ZoneChangedThisWay { Any } }` so
+        // the draw fires iff the preceding mandatory effect moved nothing.
+        for text in ["you can't", "you cannot"] {
+            let cond = try_nom_condition_as_ability_condition(text, &mut ParseContext::default());
+            assert_eq!(
+                cond,
+                Some(AbilityCondition::Not {
+                    condition: Box::new(AbilityCondition::ZoneChangedThisWay {
+                        filter: TargetFilter::Any,
+                    }),
+                }),
+                "expected Not {{ ZoneChangedThisWay {{ Any }} }} for {text:?}",
+            );
+        }
     }
 
     #[test]

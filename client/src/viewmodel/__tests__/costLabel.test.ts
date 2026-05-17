@@ -46,7 +46,11 @@ describe("abilityChoiceLabel per-variant formatting", () => {
   it("labels CrewVehicle with the keyword N extracted from engine keywords", () => {
     const object = makeObject({
       name: "Skysovereign, Consul Flagship",
-      keywords: [{ Crew: 3 } as Keyword],
+      keywords: [
+        {
+          Crew: { power: 3, once_per_turn: { type: "Unlimited" } },
+        } as unknown as Keyword,
+      ],
     });
     const action: GameAction = {
       type: "CrewVehicle",

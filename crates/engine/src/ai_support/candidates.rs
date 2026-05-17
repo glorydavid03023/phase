@@ -2398,7 +2398,15 @@ fn priority_actions(state: &GameState, player: PlayerId) -> Vec<CandidateAction>
             if let Some(obj) = state.objects.get(&obj_id) {
                 if obj.controller == player {
                     for kw in &obj.keywords {
-                        if let crate::types::keywords::Keyword::Crew(_) = kw {
+                        if let crate::types::keywords::Keyword::Crew { once_per_turn, .. } = kw {
+                            // CR 602.5b: "Activate only once each turn" — don't offer a
+                            // second crew candidate for a Vehicle already crewed this turn.
+                            if *once_per_turn
+                                == crate::types::keywords::ActivationCadence::OncePerTurn
+                                && state.crew_activated_this_turn.contains(&obj_id)
+                            {
+                                break;
+                            }
                             let has_eligible = state.battlefield.iter().any(|&cid| {
                                 cid != obj_id
                                     && state.objects.get(&cid).is_some_and(|c| {
