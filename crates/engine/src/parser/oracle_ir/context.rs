@@ -58,6 +58,15 @@ pub(crate) struct ParseContext {
     /// host (Springheart Nantuko's landfall copy-token). `None` for non-Aura
     /// cards, so `ParentTarget` keeps its chosen-target semantics (Twinflame).
     pub host_self_reference: Option<TargetFilter>,
+    /// CR 603.4: Transient relative-clause filter parsed from a
+    /// trigger subject ("an opponent **who controls F** draws a card"). Set by
+    /// `parse_single_subject` when it consumes a "who controls <filter>"
+    /// clause; consumed by `parse_trigger_condition`, which rewrites the
+    /// filter's controller to `ControllerRef::TriggeringPlayer` and ANDs an
+    /// `ObjectCount >= 1` intervening-if into the trigger's condition. Reset to
+    /// `None` at the entry of every `parse_trigger_condition` call so stale
+    /// clause state cannot leak across trigger lines.
+    pub pending_trigger_subject_clause: Option<TargetFilter>,
 }
 
 impl ParseContext {

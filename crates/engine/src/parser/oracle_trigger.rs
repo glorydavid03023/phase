@@ -3243,6 +3243,14 @@ pub(crate) fn parse_trigger_condition(
     condition: &str,
     ctx: &mut ParseContext,
 ) -> (TriggerMode, TriggerDefinition) {
+    // CR 603.4: Reset any stale relative-clause state before parsing this
+    // trigger line. Every early-return path below (phase/player/counter
+    // triggers, disjunctive zone-change, the `Unknown` fallback) and the
+    // compound-`or` subject recursion must start from a clean slate so a
+    // "who controls F" clause from a previous trigger line cannot leak into
+    // this one.
+    ctx.pending_trigger_subject_clause = None;
+
     let lower = condition.to_lowercase();
 
     if let Some(result) = try_parse_named_trigger_mode(&lower) {
@@ -3315,6 +3323,30 @@ pub(crate) fn parse_trigger_condition(
         ctx.diagnostics.extend(subject_diagnostics);
         if is_batched {
             def.batched = true;
+        }
+        // CR 603.4: "an opponent who controls F draws a card" — the
+        // relative clause parsed by `parse_single_subject` is an intervening-if:
+        // the trigger fires only when the triggering player controls >= 1
+        // permanent matching F. Rewrite F's controller to `TriggeringPlayer`
+        // (the drawer/life-gainer) and AND an `ObjectCount >= 1` check into the
+        // trigger's condition.
+        if let Some(clause_filter) = ctx.pending_trigger_subject_clause.take() {
+            let f_with_triggering_player = with_triggering_player_controller(clause_filter);
+            let clause_cond = TriggerCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::ObjectCount {
+                        filter: f_with_triggering_player,
+                    },
+                },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 1 },
+            };
+            def.condition = Some(match def.condition.take() {
+                Some(existing) => TriggerCondition::And {
+                    conditions: vec![existing, clause_cond],
+                },
+                None => clause_cond,
+            });
         }
         return (mode, def);
     }
@@ -3427,6 +3459,42 @@ fn parse_trigger_subject<'a>(text: &'a str, ctx: &mut ParseContext) -> (TargetFi
     }
 
     (first, rest)
+}
+
+/// CR 603.4: Recognize an event verb at the head of `input`. Returns the
+/// remainder after the verb. Used by `find_clause_verb_boundary` to detect
+/// where a trigger-subject relative clause ends and the event verb begins.
+fn event_verb_lookahead(input: &str) -> OracleResult<'_, ()> {
+    value(
+        (),
+        alt((
+            tag("draws a card"),
+            tag("gains life"),
+            tag("loses life"),
+            tag("draw a card"),
+            tag("gain life"),
+            tag("lose life"),
+        )),
+    )
+    .parse(input)
+}
+
+/// CR 603.4: Split `text` at the first word boundary where an event verb
+/// begins. Scans word boundaries (the `scan_timing_restrictions`/`scan_for_phase`
+/// idiom) rather than substring-searching. Returns `(clause_text, verb_rest)`
+/// where `clause_text` is the relative-clause filter source and `verb_rest`
+/// starts at the event verb. Returns `None` when no event verb is found.
+fn find_clause_verb_boundary(text: &str) -> Option<(&str, &str)> {
+    let mut offset = 0;
+    loop {
+        let candidate = &text[offset..];
+        if event_verb_lookahead(candidate).is_ok() {
+            return Some((text[..offset].trim_end(), candidate));
+        }
+        // Advance to the next word boundary.
+        let space = candidate.find(' ')?;
+        offset += space + 1;
+    }
 }
 
 /// Parse a single (non-compound) trigger subject.
@@ -3562,7 +3630,34 @@ fn parse_single_subject<'a>(text: &'a str, ctx: &mut ParseContext) -> (TargetFil
     ))
     .parse(text)
     {
-        return (filter, rest.trim_start());
+        let rest = rest.trim_start();
+        // CR 603.4: Relative clause "who control[s] <filter>" —
+        // a control-presence restriction on the player subject. When present,
+        // parse the clause filter, stash it on the context for
+        // `parse_trigger_condition` to lift into an intervening-if, and
+        // continue parsing the event verb from after the clause.
+        if let Ok((after_who, ())) = value(
+            (),
+            (
+                tag::<_, _, OracleError<'_>>("who control"),
+                opt(tag("s")),
+                tag(" "),
+            ),
+        )
+        .parse(rest)
+        {
+            if let Some((clause_text, verb_rest)) = find_clause_verb_boundary(after_who) {
+                let (clause_filter, clause_remainder) = parse_type_phrase(clause_text);
+                // Only treat this as a control-relative clause when the clause
+                // text parsed cleanly into a typed filter.
+                if clause_remainder.trim().is_empty() && !matches!(clause_filter, TargetFilter::Any)
+                {
+                    ctx.pending_trigger_subject_clause = Some(clause_filter);
+                    return (filter, verb_rest);
+                }
+            }
+        }
+        return (filter, rest);
     }
 
     // "a "/"an " + type phrase (general subject)
@@ -3626,6 +3721,32 @@ fn add_controller(filter: TargetFilter, controller: ControllerRef) -> TargetFilt
             filters: filters
                 .into_iter()
                 .map(|filter| add_controller(filter, controller.clone()))
+                .collect(),
+        },
+        other => other,
+    }
+}
+
+/// CR 603.2 + CR 109.4: Rewrite a relative-clause filter's top-level
+/// `TypedFilter.controller` to `ControllerRef::TriggeringPlayer` so the
+/// `ObjectCount` intervening-if counts permanents controlled by the
+/// triggering player ("an opponent **who controls F**"). Distributes into
+/// `Or` branches; leaves non-`Typed` filters unchanged.
+fn with_triggering_player_controller(filter: TargetFilter) -> TargetFilter {
+    match filter {
+        TargetFilter::Typed(TypedFilter {
+            type_filters,
+            controller: _,
+            properties,
+        }) => TargetFilter::Typed(TypedFilter {
+            type_filters,
+            controller: Some(ControllerRef::TriggeringPlayer),
+            properties,
+        }),
+        TargetFilter::Or { filters } => TargetFilter::Or {
+            filters: filters
+                .into_iter()
+                .map(with_triggering_player_controller)
                 .collect(),
         },
         other => other,
@@ -15738,6 +15859,166 @@ mod tests {
             }
             other => panic!("expected Treasure Token sub_ability, got: {other:?}"),
         }
+    }
+
+    /// CR 603.4: Wedding Ring — "an opponent who controls F draws
+    /// a card" parses the relative clause into an `ObjectCount >= 1`
+    /// intervening-if scoped to the triggering player, ANDed with the
+    /// during-turn timing condition.
+    fn assert_wedding_ring_clause_condition(condition: &Option<TriggerCondition>) {
+        let TriggerCondition::And { conditions } = condition
+            .as_ref()
+            .expect("trigger should carry a condition")
+        else {
+            panic!("expected And condition, got: {condition:?}");
+        };
+        assert_eq!(conditions.len(), 2, "during-turn AND clause-presence");
+        // First conjunct: the "during their turn" timing restriction.
+        assert_eq!(
+            conditions[0],
+            TriggerCondition::DuringPlayersTurn {
+                player: PlayerFilter::TriggeringPlayer,
+            },
+        );
+        // Second conjunct: the "who controls F" relative-clause intervening-if.
+        match &conditions[1] {
+            TriggerCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::ObjectCount { filter },
+                    },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 1 },
+            } => {
+                let TargetFilter::Typed(tf) = filter else {
+                    panic!("expected Typed clause filter, got: {filter:?}");
+                };
+                assert_eq!(
+                    tf.controller,
+                    Some(ControllerRef::TriggeringPlayer),
+                    "clause filter controller must be TriggeringPlayer",
+                );
+                assert!(
+                    tf.type_filters.contains(&TypeFilter::Artifact),
+                    "clause filter should be an artifact: {tf:?}",
+                );
+                // CR 201.2a: name comparison is case-insensitive at evaluation;
+                // `parse_trigger_condition` lowercases the condition text, so the
+                // parsed `Named` value is lowercase here.
+                assert!(
+                    tf.properties.iter().any(|p| matches!(
+                        p,
+                        FilterProp::Named { name } if name.eq_ignore_ascii_case("Wedding Ring")
+                    )),
+                    "clause filter should carry Named \"Wedding Ring\": {tf:?}",
+                );
+            }
+            other => panic!("expected QuantityComparison clause, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wedding_ring_who_controls_clause_drawn() {
+        // `parse_trigger_condition` receives the trigger CONDITION clause only
+        // (the effect has already been split off by the IR pipeline at the
+        // first comma — see `parse_trigger_line_with_index_ir`).
+        let mut ctx = ParseContext::default();
+        let (mode, def) = parse_trigger_condition(
+            "Whenever an opponent who controls an artifact named Wedding Ring draws a card during their turn",
+            &mut ctx,
+        );
+        assert_eq!(mode, TriggerMode::Drawn);
+        assert_eq!(
+            def.valid_target,
+            Some(TargetFilter::Typed(
+                TypedFilter::default().controller(ControllerRef::Opponent)
+            )),
+        );
+        assert_wedding_ring_clause_condition(&def.condition);
+    }
+
+    #[test]
+    fn wedding_ring_who_controls_clause_gains_life() {
+        let mut ctx = ParseContext::default();
+        let (mode, def) = parse_trigger_condition(
+            "Whenever an opponent who controls an artifact named Wedding Ring gains life during their turn",
+            &mut ctx,
+        );
+        assert_eq!(mode, TriggerMode::LifeGained);
+        assert_eq!(
+            def.valid_target,
+            Some(TargetFilter::Typed(
+                TypedFilter::default().controller(ControllerRef::Opponent)
+            )),
+        );
+        assert_wedding_ring_clause_condition(&def.condition);
+    }
+
+    #[test]
+    fn plain_opponent_draws_has_no_clause_condition() {
+        // CR 603.4: A trigger with no "who controls" clause must not carry a
+        // QuantityComparison intervening-if (unregressed baseline).
+        let mut ctx = ParseContext::default();
+        let (mode, def) = parse_trigger_condition("an opponent draws a card", &mut ctx);
+        assert_eq!(mode, TriggerMode::Drawn);
+        assert_eq!(def.condition, None);
+    }
+
+    #[test]
+    fn parse_trigger_condition_entry_resets_stale_subject_clause() {
+        // ROUND-3 CORRECTION #1: `parse_trigger_condition` unconditionally
+        // resets `ctx.pending_trigger_subject_clause` at entry. This guards
+        // against a clause set on a prior parse path (subject decomposition,
+        // compound-`or` recursion, or a discarded-remainder caller such as
+        // `extract_trigger_subject_for_context`) leaking into the next trigger
+        // line — those paths set the clause but never reach the consuming
+        // `.take()` in `parse_trigger_condition`.
+        //
+        // This test discriminates the entry-reset directly: a stale clause is
+        // pre-seeded on the context, then a CLEAN trigger (no "who controls"
+        // clause of its own) is parsed. With the entry-reset the stale clause
+        // is discarded and the clean trigger carries NO condition. Without the
+        // entry-reset the stale clause survives to the post-`try_parse_event`
+        // `.take()` and is wrongly ANDed into the clean trigger's condition.
+        let mut ctx = ParseContext {
+            pending_trigger_subject_clause: Some(TargetFilter::Typed(TypedFilter {
+                type_filters: vec![TypeFilter::Artifact],
+                controller: None,
+                properties: vec![FilterProp::Named {
+                    name: "wedding ring".to_string(),
+                }],
+            })),
+            ..ParseContext::default()
+        };
+
+        let (mode, def) = parse_trigger_condition("an opponent draws a card", &mut ctx);
+        assert_eq!(mode, TriggerMode::Drawn);
+        assert_eq!(
+            def.condition, None,
+            "entry-reset must discard the pre-seeded stale clause; \
+             a clean trigger must not inherit a leaked QuantityComparison",
+        );
+        // The reset must also clear the field itself, not just ignore it.
+        assert_eq!(ctx.pending_trigger_subject_clause, None);
+    }
+
+    #[test]
+    fn who_controls_clause_does_not_leak_to_next_trigger_line() {
+        // Sequential end-to-end check: a "who controls F" trigger followed by a
+        // plain opponent-draw trigger on the SAME context. The first parse
+        // consumes its own clause via `.take()`; the entry-reset additionally
+        // guarantees the second line starts clean.
+        let mut ctx = ParseContext::default();
+        let (_, first) = parse_trigger_condition(
+            "Whenever an opponent who controls an artifact named Wedding Ring draws a card during their turn",
+            &mut ctx,
+        );
+        assert_wedding_ring_clause_condition(&first.condition);
+        let (_, second) = parse_trigger_condition("an opponent draws a card", &mut ctx);
+        assert_eq!(
+            second.condition, None,
+            "second trigger line must not inherit the first line's clause",
+        );
     }
 
     #[test]

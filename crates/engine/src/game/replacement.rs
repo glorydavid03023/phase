@@ -2103,6 +2103,9 @@ fn evaluate_replacement_condition(
                 // CR 109.4: Chosen-player scope is undefined at replacement-check
                 // time (no resolution context). Fail closed.
                 Some(ControllerRef::ChosenPlayer { .. }) => false,
+                // CR 603.2 + CR 109.4: Triggering-player scope is undefined at
+                // replacement-check time (no event context). Fail closed.
+                Some(ControllerRef::TriggeringPlayer) => false,
                 None => true,
             };
             if !turn_ok {
@@ -2132,6 +2135,9 @@ fn evaluate_replacement_condition(
                 // CR 109.4: Chosen-player scope is undefined at replacement-check
                 // time (no resolution context). Fail closed.
                 Some(ControllerRef::ChosenPlayer { .. }) => false,
+                // CR 603.2 + CR 109.4: Triggering-player scope is undefined at
+                // replacement-check time (no event context). Fail closed.
+                Some(ControllerRef::TriggeringPlayer) => false,
                 None => true,
             };
             if !turn_ok {
@@ -2243,7 +2249,8 @@ fn evaluate_replacement_condition(
                 | ControllerRef::TargetPlayer
                 | ControllerRef::ParentTargetController
                 | ControllerRef::DefendingPlayer
-                | ControllerRef::ChosenPlayer { .. } => false,
+                | ControllerRef::ChosenPlayer { .. }
+                | ControllerRef::TriggeringPlayer => false,
             }
         }
         // CR 500.7 + CR 614.10: Replacement applies only for extra turns.
@@ -2482,6 +2489,10 @@ pub fn find_applicable_replacements(
                                 // CR 109.4: Chosen-player scope has no meaning
                                 // for static token-creation replacements.
                                 crate::types::ability::ControllerRef::ChosenPlayer { .. } => false,
+                                // CR 603.2 + CR 109.4: Triggering-player scope
+                                // has no meaning for static token-creation
+                                // replacements. Fail closed.
+                                crate::types::ability::ControllerRef::TriggeringPlayer => false,
                             };
                             if !matches {
                                 continue;

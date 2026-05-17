@@ -366,8 +366,31 @@ fn with_detection_trigger_event<R>(
 
 /// Read the detection-time trigger event override, if set. Returns `None`
 /// outside `resolve_quantity_for_trigger_check`.
-fn detection_trigger_event() -> Option<crate::types::events::GameEvent> {
+///
+/// CR 603.4: At trigger *detection* time `state.current_trigger_event` is
+/// `None`; the candidate event is held in this thread-local instead. Filter
+/// matching for `ControllerRef::TriggeringPlayer` falls back to this accessor
+/// so intervening-if quantity checks resolve the triggering player during
+/// detection (mirrors the `OtherThanTriggerObject` detection/resolution
+/// dual-path).
+pub fn detection_trigger_event() -> Option<crate::types::events::GameEvent> {
     DETECTION_TRIGGER_EVENT.with(|slot| slot.borrow().clone())
+}
+
+/// CR 603.2 + CR 109.4: Resolve the player identified by the current
+/// triggering event, preferring the resolution-time `current_trigger_event`
+/// and falling back to the detection-time thread-local override.
+///
+/// Single authority for `ControllerRef::TriggeringPlayer` resolution — `filter.rs`
+/// calls this rather than duplicating the detection/resolution dual-path. Lives
+/// here because this module owns the `DETECTION_TRIGGER_EVENT` thread-local.
+pub(crate) fn triggering_event_player(state: &GameState) -> Option<PlayerId> {
+    state
+        .current_trigger_event
+        .as_ref()
+        .cloned()
+        .or_else(detection_trigger_event)
+        .and_then(|e| crate::game::targeting::extract_player_from_event(&e, state))
 }
 
 /// CR 603.4 + CR 109.3: Recursively check whether a `TargetFilter` carries
@@ -1344,6 +1367,10 @@ fn resolve_ref(
                         ControllerRef::ChosenPlayer { index } => ability
                             .and_then(|a| a.chosen_players.get(*index as usize).copied())
                             .is_some_and(|pid| pid == obj.controller),
+                        // CR 603.2 + CR 109.4: Land controlled by the triggering player.
+                        ControllerRef::TriggeringPlayer => {
+                            triggering_event_player(state).is_some_and(|pid| pid == obj.controller)
+                        }
                     };
                     if controller_matches && obj.card_types.core_types.contains(&CoreType::Land) {
                         for subtype in &basic_subtypes {
@@ -1664,6 +1691,10 @@ fn resolve_ref(
                         Some(ControllerRef::ChosenPlayer { index }) => ability
                             .and_then(|a| a.chosen_players.get(*index as usize).copied())
                             .is_some_and(|pid| pid == snap.controller),
+                        // CR 603.2 + CR 109.4: Attachment controlled by the triggering player.
+                        Some(ControllerRef::TriggeringPlayer) => {
+                            triggering_event_player(state).is_some_and(|pid| pid == snap.controller)
+                        }
                     })
                     .count(),
             )
@@ -1713,6 +1744,10 @@ fn damage_source_controller_matches(
         ControllerRef::ChosenPlayer { index } => ability
             .and_then(|ability| ability.chosen_players.get(*index as usize).copied())
             .is_some_and(|player| actual == player),
+        // CR 603.2 + CR 109.4: Damage source controlled by the triggering player.
+        ControllerRef::TriggeringPlayer => {
+            triggering_event_player(state).is_some_and(|player| actual == player)
+        }
     }
 }
 
@@ -2681,6 +2716,76 @@ mod tests {
         };
 
         assert_eq!(resolve_quantity(&state, &qty, PlayerId(0), spell), 2);
+    }
+
+    #[test]
+    fn object_count_triggering_player_counts_only_triggering_players_permanents() {
+        // CR 603.2 + CR 109.4: An `ObjectCount` filter scoped to
+        // `ControllerRef::TriggeringPlayer` resolves the count against the
+        // player identified by `state.current_trigger_event`.
+        let mut state = GameState::new_two_player(42);
+
+        // P0 controls a matching artifact; P1 controls a matching artifact.
+        let p0_ring = create_object(
+            &mut state,
+            CardId(200),
+            PlayerId(0),
+            "Wedding Ring".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&p0_ring)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Artifact);
+        let p1_ring = create_object(
+            &mut state,
+            CardId(201),
+            PlayerId(1),
+            "Wedding Ring".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&p1_ring)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Artifact);
+
+        let filter = TargetFilter::Typed(TypedFilter {
+            type_filters: vec![TypeFilter::Artifact],
+            controller: Some(ControllerRef::TriggeringPlayer),
+            properties: vec![FilterProp::Named {
+                name: "Wedding Ring".to_string(),
+            }],
+        });
+        let qty = QuantityExpr::Ref {
+            qty: QuantityRef::ObjectCount {
+                filter: filter.clone(),
+            },
+        };
+
+        // Trigger event: P1 drew a card → triggering player is P1.
+        state.current_trigger_event = Some(crate::types::events::GameEvent::CardDrawn {
+            player_id: PlayerId(1),
+            object_id: ObjectId(999),
+            nth_in_turn: 1,
+            nth_in_step: 1,
+        });
+        // Counts only P1's Wedding Ring, not P0's.
+        assert_eq!(resolve_quantity(&state, &qty, PlayerId(0), p0_ring), 1);
+
+        // Trigger event: P0 drew a card → triggering player is P0.
+        state.current_trigger_event = Some(crate::types::events::GameEvent::CardDrawn {
+            player_id: PlayerId(0),
+            object_id: ObjectId(998),
+            nth_in_turn: 1,
+            nth_in_step: 1,
+        });
+        assert_eq!(resolve_quantity(&state, &qty, PlayerId(0), p0_ring), 1);
     }
 
     #[test]

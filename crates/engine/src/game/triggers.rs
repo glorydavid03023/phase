@@ -2354,19 +2354,6 @@ pub(crate) fn check_trigger_condition(
         TriggerCondition::EchoDue => source_id
             .and_then(|id| state.objects.get(&id))
             .is_some_and(|obj| obj.echo_due),
-        TriggerCondition::ControlCreatures { minimum } => {
-            let count = state
-                .battlefield
-                .iter()
-                .filter(|id| {
-                    state.objects.get(id).is_some_and(|obj| {
-                        obj.controller == controller
-                            && obj.card_types.core_types.contains(&CoreType::Creature)
-                    })
-                })
-                .count();
-            count >= *minimum as usize
-        }
         // CR 508.1a: Count co-attackers excluding the source creature.
         TriggerCondition::MinCoAttackers { minimum } => {
             state.combat.as_ref().is_some_and(|combat| {

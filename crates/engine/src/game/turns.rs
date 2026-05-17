@@ -1342,7 +1342,7 @@ pub fn auto_advance(state: &mut GameState, events: &mut Vec<GameEvent>) -> Waiti
             Phase::BeginCombat => {
                 // CR 507.1: "At the beginning of combat" triggers fire here.
                 // Process triggers regardless of attackers — CR 507.1 says the step
-                // happens unconditionally; trigger conditions (e.g., ControlCreatures)
+                // happens unconditionally; trigger conditions (e.g., ControlCount)
                 // are checked by the trigger system, not by skipping the step.
                 let triggers_fired = process_phase_triggers(state);
                 if triggers_fired {

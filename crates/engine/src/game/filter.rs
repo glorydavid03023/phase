@@ -215,6 +215,8 @@ fn controller_ref_player(
         ControllerRef::ChosenPlayer { index } => {
             ability.and_then(|a| a.chosen_players.get(*index as usize).copied())
         }
+        // CR 603.2 + CR 109.4: The player identified by the triggering event.
+        ControllerRef::TriggeringPlayer => crate::game::quantity::triggering_event_player(state),
     }
 }
 
@@ -529,6 +531,14 @@ fn filter_inner_for_object(
                     // resolution-scoped chosen player.
                     ControllerRef::ChosenPlayer { index } => {
                         match ability.and_then(|a| a.chosen_players.get(*index as usize).copied()) {
+                            Some(pid) if pid == obj.controller => {}
+                            _ => return false,
+                        }
+                    }
+                    // CR 603.2 + CR 109.4: "an opponent who controls F" — match
+                    // the object's controller against the triggering player.
+                    ControllerRef::TriggeringPlayer => {
+                        match crate::game::quantity::triggering_event_player(state) {
                             Some(pid) if pid == obj.controller => {}
                             _ => return false,
                         }
@@ -1073,6 +1083,10 @@ pub fn spell_record_matches_filter(
                     // CR 109.4: A chosen-player scope has no meaning for a
                     // spell-history record (no resolution context). Fail closed.
                     ControllerRef::ChosenPlayer { .. } => return false,
+                    // CR 603.2 + CR 109.4: A triggering-player scope has no
+                    // meaning for a spell-history record (no event context).
+                    // Fail closed.
+                    ControllerRef::TriggeringPlayer => return false,
                 }
             }
 
@@ -1865,6 +1879,8 @@ fn matches_filter_prop(
                     }
                     (Some(ControllerRef::DefendingPlayer), Some(pid)) => perm.controller == pid,
                     (Some(ControllerRef::ChosenPlayer { .. }), Some(pid)) => perm.controller == pid,
+                    // CR 603.2 + CR 109.4: triggering-player-scoped name match.
+                    (Some(ControllerRef::TriggeringPlayer), Some(pid)) => perm.controller == pid,
                     (Some(_), None) => false,
                     (None, _) => true,
                 };
@@ -1905,6 +1921,11 @@ fn matches_filter_prop(
                 .ability
                 .and_then(|a| a.chosen_players.get(*index as usize).copied())
                 .is_some_and(|pid| pid == obj.owner),
+            // CR 603.2 + CR 109.4: Ownership relative to the triggering player.
+            ControllerRef::TriggeringPlayer => {
+                crate::game::quantity::triggering_event_player(state)
+                    .is_some_and(|pid| pid == obj.owner)
+            }
         },
         // CR 303.4 + CR 301.5f: `EnchantedBy` is source-relative when the
         // source is an Aura ("enchanted creature gets +1/+1"). When the source
@@ -2396,6 +2417,10 @@ fn zone_change_record_matches_property(
                 .ability
                 .and_then(|a| a.chosen_players.get(*index as usize).copied())
                 .is_some_and(|pid| pid == record.owner),
+            // CR 603.2 + CR 109.4: Ownership relative to the triggering player.
+            ControllerRef::TriggeringPlayer => {
+                crate::game::quantity::triggering_event_player(state).is_some_and(|pid| pid == record.owner)
+            }
         },
         // CR 701.12: Source's chosen creature type applied to the snapshot subtypes.
         FilterProp::IsChosenCreatureType => source.chosen_creature_type.is_some_and(|chosen| {
@@ -2579,6 +2604,11 @@ fn attachment_controller_matches(
             .ability
             .and_then(|a| a.chosen_players.get(*index as usize).copied())
             .is_some_and(|pid| pid == attachment_controller),
+        // CR 603.2 + CR 109.4: Attachment controller relative to the triggering player.
+        Some(ControllerRef::TriggeringPlayer) => {
+            crate::game::quantity::triggering_event_player(state)
+                .is_some_and(|pid| pid == attachment_controller)
+        }
     }
 }
 
@@ -3030,6 +3060,9 @@ pub fn player_matches_target_filter(
             // CR 109.4: Chosen-player scope has no meaning without resolution
             // context. Fail closed (mirrors `TargetPlayer`).
             Some(ControllerRef::ChosenPlayer { .. }) => false,
+            // CR 603.2 + CR 109.4: Triggering-player scope has no meaning
+            // without event/game-state context here. Fail closed.
+            Some(ControllerRef::TriggeringPlayer) => false,
             None => true,
         },
         // Typed filters with type_filters don't match players

@@ -1556,6 +1556,13 @@ pub enum ControllerRef {
     ChosenPlayer {
         index: u8,
     },
+    /// CR 603.2 + CR 109.4: Filter controller is the player identified by the
+    /// triggering event (the drawer, life-gainer, attacker, etc.). Resolved
+    /// against `state.current_trigger_event` via `extract_player_from_event`.
+    /// Mirrors `PlayerFilter::TriggeringPlayer` and `TargetFilter::TriggeringPlayer`.
+    /// Used by control-relative trigger restrictions
+    /// ("an opponent who controls F draws a card").
+    TriggeringPlayer,
 }
 
 /// CR 301 / CR 303: Kinds of attachments to permanents.
@@ -7998,9 +8005,6 @@ pub enum TriggerCondition {
     LostLife,
     /// "if you descended this turn" (a permanent card was put into your graveyard)
     Descended,
-    /// Deprecated: Use `ControlCount { minimum, filter }` instead.
-    /// Kept for backward compatibility with serialized card data.
-    ControlCreatures { minimum: u32 },
     /// "if you control a [type]" — general control presence check.
     ControlsType { filter: TargetFilter },
     /// CR 603.4: "if no spells were cast last turn" — werewolf transform condition.

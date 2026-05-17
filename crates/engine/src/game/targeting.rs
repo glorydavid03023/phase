@@ -96,6 +96,9 @@ pub fn find_legal_targets(
                     // CR 109.4: A chosen player is fixed during resolution, not
                     // enumerated as a target candidate. Fail closed.
                     Some(ControllerRef::ChosenPlayer { .. }) => false,
+                    // CR 603.2 + CR 109.4: The triggering player is fixed by
+                    // the event, not enumerated as a target candidate. Fail closed.
+                    Some(ControllerRef::TriggeringPlayer) => false,
                     None => true,
                 };
                 if include {

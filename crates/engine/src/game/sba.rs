@@ -291,6 +291,9 @@ fn static_affects_player(
             // CR 109.4: Chosen-player scope has no resolution context here.
             // Fail closed.
             Some(ControllerRef::ChosenPlayer { .. }) => false,
+            // CR 603.2 + CR 109.4: Triggering-player scope has no event
+            // context for static-ability scoping. Fail closed.
+            Some(ControllerRef::TriggeringPlayer) => false,
             None => true,
         },
         Some(TargetFilter::Player) => true,

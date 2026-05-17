@@ -74,6 +74,13 @@ fn resolve_sacrifice_scope(
             .copied()
             .map(|pid| vec![pid])
             .unwrap_or_default(),
+        // CR 603.2 + CR 109.4: The player identified by the triggering event.
+        Some(ControllerRef::TriggeringPlayer) => state
+            .current_trigger_event
+            .as_ref()
+            .and_then(|event| crate::game::targeting::extract_player_from_event(event, state))
+            .map(|pid| vec![pid])
+            .unwrap_or_default(),
     }
 }
 
