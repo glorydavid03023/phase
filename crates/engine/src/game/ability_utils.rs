@@ -819,17 +819,25 @@ pub fn validate_targets_in_chain(state: &GameState, ability: &ResolvedAbility) -
                 validated.controller,
                 validated.source_id,
             ),
-            // CR 603.7c + CR 608.2b: A context-ref filter (`ParentTarget`,
+            // CR 608.2b: A context-ref filter (`ParentTarget`,
             // `TriggeringSource`, etc.) carries a resolution-time *snapshot*,
             // not a player-chosen target. `extract_target_filter_from_effect`
             // returns `None` for it via the `is_context_ref` guard, but unlike
             // a genuinely target-less effect its `targets` must NOT be fizzle-
             // filtered: CR 608.2b's "no longer in the zone" check applies only
-            // to abilities that *specify targets*. A delayed-return trigger
-            // (Flickerwisp) deliberately references an exiled card — filtering
-            // it to battlefield presence would wrongly fizzle the return. The
-            // resolution-time zone check (CR 603.7c) lives in
-            // `change_zone::resolve`'s `origin` guard, not here.
+            // to abilities that *specify targets* (use the word "target"). A
+            // delayed-return trigger (Flickerwisp) deliberately references an
+            // exiled card — filtering it to battlefield presence would wrongly
+            // fizzle the return.
+            //
+            // NOTE: CR 603.7c's resolution-time zone check ("if that object is
+            // no longer in the zone it's expected to be in ... the ability
+            // won't affect it") is NOT yet enforced for `origin: None` delayed
+            // returns. `change_zone::resolve`'s CR 400.7 guard only runs under
+            // `if let Some(expected_origin) = origin`, so a Flickerwisp victim
+            // that leaves Exile before the end step would still be moved.
+            // Tracked as a separate, broader follow-up issue (touches the
+            // parser + `change_zone.rs`) — out of scope here.
             None if validated
                 .effect
                 .target_filter()
