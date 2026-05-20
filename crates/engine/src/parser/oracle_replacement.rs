@@ -229,7 +229,19 @@ fn parse_replacement_line_inner(text: &str, card_name: &str) -> Option<Replaceme
         let mut def =
             ReplacementDefinition::new(ReplacementEvent::Draw).description(text.to_string());
         if let Some(e) = effect_text {
-            def = def.execute(parse_effect_chain(&e, AbilityKind::Spell));
+            // CR 614.1a + CR 614.6 + CR 121.6: "you may instead {effect}" makes
+            // the draw replacement optional. The player is offered an
+            // accept/decline prompt; on decline, the original draw event
+            // proceeds unmodified (CR 614.6: only the accept branch replaces
+            // the event), so `decline: None` is correct — no synthetic
+            // draw-on-decline ability (which would double-draw on accept and
+            // shadow the engine's native draw on decline). Strip the lead-in
+            // before handing the remainder to `parse_effect_chain`.
+            let (optional_modal_present, effect_after_modal) = strip_optional_instead_lead_in(&e);
+            if optional_modal_present {
+                def = def.mode(ReplacementMode::Optional { decline: None });
+            }
+            def = def.execute(parse_effect_chain(&effect_after_modal, AbilityKind::Spell));
         }
         // CR 121.1 + CR 504.1 + CR 614.6: Detect Alhammarret's Archive's
         // "except the first one [you|they] draw in each of [your|their] draw
@@ -3006,6 +3018,27 @@ fn extract_replacement_effect(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// CR 614.1a + CR 614.6: Strip a leading "you may instead " modal from the
+/// effect text of an optional replacement and report whether it was present.
+/// Returns `(true, remainder)` when the modal is stripped, `(false, original)`
+/// otherwise. The modal must lead the effect text — a mid-clause "instead" is
+/// the mandatory-replacement marker, not the optional one.
+///
+/// Uses a nom `tag` over the lowercased text for dispatch (no `starts_with`),
+/// then peels the matched byte length off the original case-preserving slice
+/// so downstream chain parsing sees the original capitalization.
+fn strip_optional_instead_lead_in(effect_text: &str) -> (bool, String) {
+    let lower = effect_text.to_lowercase();
+    let strip_result: nom::IResult<&str, (), OracleError<'_>> =
+        preceded(tag("you may instead "), nom::combinator::success(())).parse(lower.as_str());
+    let Ok((rest_lower, ())) = strip_result else {
+        return (false, effect_text.to_string());
+    };
+    let offset = lower.len() - rest_lower.len();
+    let rest_orig = effect_text[offset..].trim_start();
+    (true, rest_orig.to_string())
 }
 
 #[derive(Clone, Copy)]
@@ -8503,5 +8536,117 @@ mod snapshot_tests {
         )
         .unwrap();
         insta::assert_json_snapshot!(def);
+    }
+
+    /// CR 614.1a + CR 614.6 + CR 121.6 + CR 701.20a: Abundance — the
+    /// "you may instead" antecedent must lift the draw replacement to
+    /// `ReplacementMode::Optional { decline: None }` (so the player is
+    /// prompted to accept/decline and the original draw resolves on decline),
+    /// and the effect chain must compose the existing `Effect::Choose`
+    /// (`ChoiceType::Labeled["Land","Nonland"]`) and `Effect::RevealUntil`
+    /// (filter: `FilterProp::IsChosenLandOrNonlandKind`, kept→Hand, rest→
+    /// Library) building blocks with no `Unimplemented` node anywhere.
+    #[test]
+    fn abundance_parses_as_optional_choose_then_reveal_until_chosen_kind() {
+        use crate::types::ability::{ChoiceType, FilterProp};
+        let def = parse_replacement_line(
+            "If you would draw a card, you may instead choose land or nonland and reveal cards \
+             from the top of your library until you reveal a card of the chosen kind. Put that \
+             card into your hand and put all other cards revealed this way on the bottom of \
+             your library in any order.",
+            "Abundance",
+        )
+        .expect("Abundance must parse as a Draw replacement");
+
+        assert_eq!(def.event, ReplacementEvent::Draw);
+        assert!(
+            matches!(def.mode, ReplacementMode::Optional { decline: None }),
+            "the \"you may instead\" antecedent must lift to Optional {{ decline: None }} \
+             (CR 614.6: only the accept branch replaces the event); got {:?}",
+            def.mode
+        );
+
+        let execute = def.execute.as_ref().expect("execute chain must be present");
+        // Head clause: Choose(Labeled["Land","Nonland"]).
+        let Effect::Choose {
+            choice_type: ChoiceType::Labeled { options },
+            ..
+        } = &*execute.effect
+        else {
+            panic!(
+                "expected head Effect::Choose(Labeled), got {:?}",
+                execute.effect
+            );
+        };
+        assert_eq!(
+            options,
+            &vec!["Land".to_string(), "Nonland".to_string()],
+            "labeled choice options must be exactly [\"Land\",\"Nonland\"]"
+        );
+
+        // RevealUntil { filter: IsChosenLandOrNonlandKind, kept=Hand, rest=Library }
+        // chained via the bare-and split (either as ContinuationStep or
+        // SequentialSibling — both run sequentially under the chain resolver).
+        let reveal = execute
+            .sub_ability
+            .as_ref()
+            .expect("RevealUntil must follow Choose as a sequential sibling");
+        let Effect::RevealUntil {
+            filter: TargetFilter::Typed(tf),
+            kept_destination,
+            rest_destination,
+            ..
+        } = &*reveal.effect
+        else {
+            panic!(
+                "expected sibling Effect::RevealUntil, got {:?}",
+                reveal.effect
+            );
+        };
+        assert!(
+            tf.properties
+                .iter()
+                .any(|p| matches!(p, FilterProp::IsChosenLandOrNonlandKind)),
+            "RevealUntil filter must carry FilterProp::IsChosenLandOrNonlandKind so the \
+             runtime resolves the kept card against the controller's earlier labeled choice"
+        );
+        assert_eq!(*kept_destination, Zone::Hand);
+        assert_eq!(*rest_destination, Zone::Library);
+
+        // No Unimplemented anywhere in the tree, and no stray PutAtLibraryPosition
+        // sibling (the prior AST had a fallback chain that ended in
+        // PutAtLibraryPosition — the chain must collapse to Choose → RevealUntil).
+        let mut node: Option<&AbilityDefinition> = Some(execute.as_ref());
+        while let Some(ability) = node {
+            assert!(
+                !matches!(*ability.effect, Effect::Unimplemented { .. }),
+                "no Unimplemented node may remain in Abundance's parse tree; got {:?}",
+                ability.effect
+            );
+            assert!(
+                !matches!(*ability.effect, Effect::PutAtLibraryPosition { .. }),
+                "no stray PutAtLibraryPosition sibling — the continuation must be absorbed \
+                 by RevealUntilKept; got {:?}",
+                ability.effect
+            );
+            node = ability.sub_ability.as_deref();
+        }
+    }
+
+    /// CR 614.1a + CR 614.6: A "you may instead" lead-in on a draw
+    /// replacement must lift to Optional mode but otherwise leave the
+    /// effect-chain parse identical to the mandatory-instead form. The
+    /// stripper must consume only the modal prefix.
+    #[test]
+    fn strip_optional_instead_lead_in_consumes_only_the_modal() {
+        let (had_modal, rest) = super::strip_optional_instead_lead_in(
+            "you may instead choose land or nonland and reveal cards",
+        );
+        assert!(had_modal, "lead-in modal must be detected");
+        assert_eq!(rest, "choose land or nonland and reveal cards");
+
+        let (no_modal, unchanged) = super::strip_optional_instead_lead_in("draw two cards");
+        assert!(!no_modal, "mandatory effect text must not be misclassified");
+        assert_eq!(unchanged, "draw two cards");
     }
 }

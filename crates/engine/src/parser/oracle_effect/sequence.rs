@@ -927,6 +927,15 @@ fn starts_bare_and_clause_lower(s: &str) -> bool {
     .or(value((), tag("cast ")))
     .or(value((), tag("cloak ")))
     .or(value((), tag("convert ")))
+    // CR 701.20a (issue #516): "reveal " as an imperative clause starter so
+    // chains like "choose land or nonland and reveal cards from the top of
+    // your library ..." split at the bare " and " and each half reaches its
+    // dispatcher (`try_parse_named_choice` for "choose ...", and
+    // `try_parse_reveal_until` for "reveal cards ..."). Without this the
+    // chunk stays as one clause and `try_parse_named_choice` rejects the
+    // "land or nonland and reveal ..." remainder because the second label
+    // exceeds the 2-word cap.
+    .or(value((), tag("reveal ")))
     .or(value((), tag("returns ")))
     .or(alt((
         // CR 608.2c: Subject-prefixed verb patterns — "you [verb]" is always a clause start.

@@ -71,7 +71,6 @@ use self::imperative::{
     lower_imperative_family_ast, lower_shuffle_ast, lower_targeted_action_ast,
     lower_zone_counter_ast, parse_imperative_family_ast, parse_shuffle_ast,
 };
-#[cfg(test)]
 use self::search::parse_search_filter;
 use self::search::{parse_search_destination, parse_search_library_details, parse_seek_details};
 use self::sequence::{
@@ -4327,6 +4326,15 @@ fn try_parse_reveal_until(tp: TextPair, player: TargetFilter) -> Option<ParsedEf
         TargetFilter::Typed(
             TypedFilter::default().with_type(TypeFilter::Non(Box::new(TypeFilter::Land))),
         )
+    } else if let Some(filter) = try_parse_chosen_kind_filter(filter_text) {
+        // CR 614.11 + CR 701.20a: Reveal-until loop inside a draw replacement
+        // whose filter is resolved from the player's earlier "land or nonland"
+        // labeled choice (Abundance). Delegate the "of the chosen kind"
+        // recognition to `parse_search_filter` — the same detector already
+        // consumed by the Seek-of-the-chosen-kind family — so the runtime
+        // `FilterProp::IsChosenLandOrNonlandKind` resolver lights up here for
+        // free without a parallel string-matching arm.
+        filter
     } else {
         let (parsed, _) = parse_target(filter_text);
         parsed
@@ -4343,6 +4351,24 @@ fn try_parse_reveal_until(tp: TextPair, player: TargetFilter) -> Option<ParsedEf
         enter_tapped: false,
         kept_optional_to: None,
     }))
+}
+
+/// CR 614.11 + CR 701.20a: Detect a "card of the chosen kind" reveal-until
+/// filter by delegating to `parse_search_filter` and inspecting the result
+/// for `FilterProp::IsChosenLandOrNonlandKind`. The search-filter parser is
+/// the canonical detector for this phrase (consumed by the Seek-of-the-
+/// chosen-kind family); reusing it here avoids a parallel string match and
+/// inherits any future "permanent card of the chosen kind" extensions.
+fn try_parse_chosen_kind_filter(filter_text: &str) -> Option<TargetFilter> {
+    let mut ctx = ParseContext::default();
+    let parsed = parse_search_filter(filter_text, &mut ctx);
+    let TargetFilter::Typed(ref tf) = parsed else {
+        return None;
+    };
+    tf.properties
+        .iter()
+        .any(|p| matches!(p, FilterProp::IsChosenLandOrNonlandKind))
+        .then_some(parsed)
 }
 
 /// CR 611.2a + CR 108.3: Parse per-grantee grant clauses that follow a

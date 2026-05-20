@@ -662,17 +662,58 @@ fn draw_applier(
     state: &mut GameState,
     _events: &mut Vec<GameEvent>,
 ) -> ApplyResult {
-    let Some(new_count) = draw_replacement_count(state, rid, &event) else {
+    // CR 614.6 + CR 614.11 + CR 121.6: When the replacement's `execute` is a
+    // non-Draw effect chain (e.g., Abundance: Choose → RevealUntil), the
+    // original draw event is *fully replaced* — it never happens. Suppress
+    // the draw by zeroing the count; the `post_replacement_continuation` slot
+    // already carries the chain that replaces it, and the Draw arm of
+    // `handle_replacement_choice` drains the continuation after the
+    // (now-no-op) draw apply. Count-modifying replacements (Alhammarret's
+    // Archive draws 2× → `Effect::Draw { count: 2× }`) keep their existing
+    // path through `draw_replacement_count`.
+    if let Some(new_count) = draw_replacement_count(state, rid, &event) {
+        if let ProposedEvent::Draw {
+            player_id, applied, ..
+        } = event
+        {
+            return ApplyResult::Modified(ProposedEvent::Draw {
+                player_id,
+                count: new_count,
+                applied,
+            });
+        }
         return ApplyResult::Modified(event);
-    };
+    }
 
     if let ProposedEvent::Draw {
-        player_id, applied, ..
+        player_id,
+        count,
+        applied,
     } = event
     {
+        // CR 614.6 + CR 614.11: When the replacement's `execute` is a non-Draw
+        // chain (Abundance: Choose → RevealUntil), the original draw is *fully
+        // replaced* — never happens — and the chain is the substitute. The
+        // post_replacement_continuation slot is populated by `continue_replacement`
+        // only on the accept/Execute branch, so its presence is the discriminator
+        // between "accept → suppress draw" and "decline → original draw proceeds".
+        let suppress_draw = state.post_replacement_continuation.is_some()
+            && state
+                .objects
+                .get(&rid.source)
+                .and_then(|src| src.replacement_definitions.get(rid.index))
+                .and_then(|repl| repl.execute.as_deref())
+                .is_some_and(|def| !matches!(*def.effect, Effect::Draw { .. }));
+        if suppress_draw {
+            return ApplyResult::Modified(ProposedEvent::Draw {
+                player_id,
+                count: 0,
+                applied,
+            });
+        }
         ApplyResult::Modified(ProposedEvent::Draw {
             player_id,
-            count: new_count,
+            count,
             applied,
         })
     } else {
@@ -3629,7 +3670,7 @@ pub(crate) fn replace_combat_damage_batch(
             && state.post_replacement_continuation.is_some()
         {
             let _ = crate::game::engine_replacement::apply_pending_post_replacement_effect(
-                state, None, None, events,
+                state, None, None, None, events,
             );
         }
         match result {
@@ -3734,11 +3775,13 @@ pub fn continue_replacement(
             (ReplacementBranch::Decline, post)
         };
 
-        match apply_single_replacement(state, proposed, rid, branch, &registry, events) {
-            Ok(new_event) => proposed = new_event,
-            Err(ApplyResult::Prevented) => return ReplacementResult::Prevented,
-            Err(ApplyResult::Modified(_)) => unreachable!(),
-        }
+        // CR 614.12a: Optional accept/decline branches always derive a Template
+        // continuation — the post-effect is built from the ReplacementDefinition's
+        // `execute`/`decline` AST, never from a captured runtime resolution.
+        // Set BEFORE `apply_single_replacement` so per-event appliers (e.g.,
+        // `draw_applier`) can see the continuation slot and suppress the
+        // original event when its replacement is a non-modifier chain
+        // (CR 614.6: the draw never happens when fully replaced).
         if post_effect.is_some() {
             state.post_replacement_source = Some(rid.source);
             // CR 615.5 + CR 609.7: Optional/decline post-effects don't carry
@@ -3747,11 +3790,14 @@ pub fn continue_replacement(
             state.post_replacement_event_source = None;
             state.post_replacement_event_target = None;
         }
-        // CR 614.12a: Optional accept/decline branches always derive a Template
-        // continuation — the post-effect is built from the ReplacementDefinition's
-        // `execute`/`decline` AST, never from a captured runtime resolution.
         state.post_replacement_continuation =
             post_effect.map(PostReplacementContinuation::Template);
+
+        match apply_single_replacement(state, proposed, rid, branch, &registry, events) {
+            Ok(new_event) => proposed = new_event,
+            Err(ApplyResult::Prevented) => return ReplacementResult::Prevented,
+            Err(ApplyResult::Modified(_)) => unreachable!(),
+        }
 
         return pipeline_loop(state, proposed, pending.depth + 1, &registry, events);
     }
