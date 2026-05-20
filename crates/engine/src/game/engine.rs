@@ -2260,7 +2260,13 @@ fn apply_action(
                 let spell_meta = casting::build_spell_meta(state, player, spell_object);
                 let any_color =
                     casting::player_can_spend_as_any_color_for_spell(state, player, spell_object);
-                let max_life = super::life_costs::max_phyrexian_life_payments(state, player);
+                // CR 107.4f + CR 118.1 + CR 118.3 + CR 119.8: Re-derive the
+                // payment-permission bundle (any_color + max_life + life_colors)
+                // so re-validation sees the same K'rrik-promoted shard set the
+                // pause UI was built from.
+                let permissions = super::static_abilities::build_cost_permission_context(
+                    state, player, any_color,
+                );
                 let player_pool = state
                     .players
                     .iter()
@@ -2274,8 +2280,7 @@ fn apply_action(
                     &player_pool,
                     &cost,
                     spell_ctx.as_ref(),
-                    any_color,
-                    max_life,
+                    permissions,
                 );
                 if current_shards.len() != expected_len {
                     return Err(EngineError::ActionNotAllowed(

@@ -533,6 +533,72 @@ fn parse_cost_payment_prohibition_statics(
     ])
 }
 
+/// CR 107.4f: Parse the K'rrik-class payment-substitution static:
+/// "For each {C} in a cost, you may pay 2 life rather than pay that mana."
+///
+/// The mana symbol `{C}` is a single colored mana symbol (W/U/B/R/G). The
+/// life amount must be exactly 2 — no printed exemplar uses any other value,
+/// and the Phyrexian-shape infrastructure assumes 2.
+///
+/// Composed from nom combinators end-to-end; no string matching for dispatch.
+fn parse_pay_life_as_colored_mana(text: &str) -> Option<StaticDefinition> {
+    let trimmed = text.trim().trim_end_matches('.');
+    // Mana symbols are case-preserved in Oracle text — parse against original
+    // case, not lowercase. The phrase tail is normalized so case-insensitive
+    // matching there is safe; we apply a lowercase shadow only for tail tags.
+    let lower_trimmed = trimmed.to_lowercase();
+
+    // Combinator: "for each " + parse_colored_mana_symbol + " in a cost, you may pay " + parse_number(=2) + " life rather than pay that mana"
+    // Run nom on a lowercase-prefix view to handle "For each"/"for each" uniformly,
+    // but the brace section is case-stable.
+    let parser_result: OracleResult<'_, crate::types::mana::ManaColor> = (|| {
+        let i = lower_trimmed.as_str();
+        let (i, _) = tag::<_, _, OracleError<'_>>("for each ").parse(i)?;
+        // The next chars (`{B}`, etc.) are also `{b}` in the lowercased form —
+        // accept the lowercase form by mapping each tag.
+        let (i, color) = alt((
+            value(
+                crate::types::mana::ManaColor::White,
+                tag::<_, _, OracleError<'_>>("{w}"),
+            ),
+            value(
+                crate::types::mana::ManaColor::Blue,
+                tag::<_, _, OracleError<'_>>("{u}"),
+            ),
+            value(
+                crate::types::mana::ManaColor::Black,
+                tag::<_, _, OracleError<'_>>("{b}"),
+            ),
+            value(
+                crate::types::mana::ManaColor::Red,
+                tag::<_, _, OracleError<'_>>("{r}"),
+            ),
+            value(
+                crate::types::mana::ManaColor::Green,
+                tag::<_, _, OracleError<'_>>("{g}"),
+            ),
+        ))
+        .parse(i)?;
+        let (i, _) = tag::<_, _, OracleError<'_>>(" in a cost, you may pay ").parse(i)?;
+        let (i, n) = nom_primitives::parse_number(i)?;
+        if n != 2 {
+            // CR 107.4f: only the 2-life Phyrexian shape exists today; any other
+            // life value falls through to Unimplemented for hand verification.
+            return Err(super::oracle_nom::error::oracle_err(i));
+        }
+        let (i, _) = tag::<_, _, OracleError<'_>>(" life rather than pay that mana").parse(i)?;
+        let (i, _) = all_consuming(opt(tag::<_, _, OracleError<'_>>("."))).parse(i)?;
+        Ok((i, color))
+    })();
+
+    let (_, color) = parser_result.ok()?;
+    Some(
+        StaticDefinition::new(StaticMode::PayLifeAsColoredMana { color })
+            .affected(TargetFilter::Player)
+            .description(text.to_string()),
+    )
+}
+
 /// Parse a static/continuous ability line into a StaticDefinition.
 /// Handles: "Enchanted creature gets +N/+M", "has {keyword}",
 /// "Creatures you control get +N/+M", etc.
@@ -759,6 +825,15 @@ fn parse_static_line_inner(text: &str, inverted: InvertedAsLongAs) -> Option<Sta
                 .affected(TargetFilter::Player)
                 .description(text.to_string()),
         );
+    }
+
+    // CR 107.4f: K'rrik-class life-for-color payment substitution —
+    // "For each {C} in a cost, you may pay 2 life rather than pay that mana."
+    // Combinator parses `{C}` directly from the original text (mana symbols are
+    // case-preserved in Oracle text); lowercase tail matching on the rest of
+    // the sentence is fine because Oracle text outside the braces is normalized.
+    if let Some(def) = parse_pay_life_as_colored_mana(&text) {
+        return Some(def);
     }
 
     if nom_tag_tp(&tp, "you may choose not to untap ").is_some()

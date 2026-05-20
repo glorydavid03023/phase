@@ -65,6 +65,9 @@ fn is_data_carrying_static(mode: &StaticMode) -> bool {
             | StaticMode::SuppressTriggers { .. }
             // CR 603.2d: DoubleTriggers carries the `TriggerCause` predicate.
             | StaticMode::DoubleTriggers { .. }
+            // CR 107.4f: PayLifeAsColoredMana carries the `ManaColor` axis
+            // (K'rrik = Black; future printings any other color).
+            | StaticMode::PayLifeAsColoredMana { .. }
     )
 }
 
