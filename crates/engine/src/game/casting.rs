@@ -22244,6 +22244,100 @@ mod tests {
         );
     }
 
+    /// Issue #537 discriminator (5b): drive the Aura cast pipeline for an Aura
+    /// whose Enchant filter references a graveyard zone (Animate Dead class).
+    /// The filter is constructed via `Keyword::from_str("Enchant:creature card
+    /// in a graveyard")` — i.e., the same MTGJSON-parameterized form the card
+    /// database emits — so this test discriminates the `parse_enchant_target`
+    /// bug fixed in this change. Pre-fix: free-text `Subtype: "creature card
+    /// in a graveyard"` causes `find_legal_targets` to return `[]` and the
+    /// cast errors with "No legal targets for Aura". Post-fix: zone-aware
+    /// filter enumerates the graveyard and the cast resolves.
+    ///
+    /// CR 303.4a + CR 702.5a: the enchant filter is the single authority for
+    /// the Aura's legal target set. CR 400 / 400.1: graveyard is a CR-recognized
+    /// zone for target enumeration.
+    #[test]
+    fn animate_dead_enchant_filter_enumerates_graveyard_targets() {
+        use std::str::FromStr;
+
+        let mut state = setup_game_at_main_phase();
+
+        // Player 0 has the Aura in hand with one B mana available.
+        let aura_id = create_object(
+            &mut state,
+            CardId(601),
+            PlayerId(0),
+            "Animate Dead".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&aura_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Enchantment);
+            obj.card_types.subtypes.push("Aura".to_string());
+            // Use FromStr (mirrors the card database path) so this test
+            // discriminates the parser bug — not a hand-constructed filter.
+            let kw = Keyword::from_str("Enchant:creature card in a graveyard").unwrap();
+            obj.keywords.push(kw);
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::Black],
+                generic: 0,
+            };
+        }
+        add_mana(&mut state, PlayerId(0), ManaType::Black, 1);
+
+        // Player 1 has a creature card in their graveyard.
+        let creature_id = create_object(
+            &mut state,
+            CardId(602),
+            PlayerId(1),
+            "Grizzly Bears".to_string(),
+            Zone::Graveyard,
+        );
+        state
+            .objects
+            .get_mut(&creature_id)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let mut events = Vec::new();
+        let result =
+            handle_cast_spell(&mut state, PlayerId(0), aura_id, CardId(601), &mut events).unwrap();
+
+        // Single legal target → auto-target → spell goes straight to the stack.
+        assert!(
+            matches!(result, WaitingFor::Priority { .. }),
+            "expected auto-target onto the stack; got {result:?}"
+        );
+        assert_eq!(
+            state.stack.len(),
+            1,
+            "Aura cast must resolve to the stack once the graveyard creature is a legal target"
+        );
+        let entry = state.stack.front().unwrap();
+        if let crate::types::game_state::StackEntryKind::Spell {
+            ability: Some(ref ability),
+            ..
+        } = entry.kind
+        {
+            assert!(
+                ability
+                    .targets
+                    .iter()
+                    .any(|t| matches!(t, crate::types::ability::TargetRef::Object(id) if *id == creature_id)),
+                "Animate Dead's stack entry must target the graveyard creature; got {:?}",
+                ability.targets
+            );
+        } else {
+            panic!(
+                "expected Spell stack entry with ability; got {:?}",
+                entry.kind
+            );
+        }
+    }
+
     /// CR 702.103b regression: drives the full cast pipeline end-to-end —
     /// `handle_cast_spell` → `AlternativeCastChoice(Bestow)` →
     /// `handle_bestow_cost_choice` (Alternative) — and asserts the spell on the stack still has the

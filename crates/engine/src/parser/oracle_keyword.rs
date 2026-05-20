@@ -14,9 +14,10 @@ use super::oracle_quantity::parse_cda_quantity;
 use super::oracle_target::parse_type_phrase;
 use super::oracle_util::strip_reminder_text;
 use crate::types::ability::{
-    AbilityCost, AdditionalCost, ControllerRef, Effect, QuantityExpr, TargetFilter, TypeFilter,
-    TypedFilter,
+    AbilityCost, AdditionalCost, Effect, QuantityExpr, TargetFilter, TypedFilter,
 };
+#[cfg(test)]
+use crate::types::ability::{ControllerRef, TypeFilter};
 use crate::types::keywords::{
     BloodthirstValue, BuybackCost, CyclingCost, FlashbackCost, Keyword, WardCost,
 };
@@ -361,65 +362,10 @@ fn parse_firebending_keyword_line(line: &str) -> Option<Keyword> {
     parse_cda_quantity(quantity_text).map(Keyword::Firebending)
 }
 
-/// Nom leaf combinator: match one of the six enchantable core types and yield
-/// the corresponding `TypeFilter`. Driven by `value()` + `alt()` so additional
-/// types slot in as one-line extensions.
-fn parse_enchant_type_leg(input: &str) -> nom::IResult<&str, TypeFilter, OracleError<'_>> {
-    alt((
-        value(TypeFilter::Creature, tag("creature")),
-        value(TypeFilter::Land, tag("land")),
-        value(TypeFilter::Artifact, tag("artifact")),
-        value(TypeFilter::Enchantment, tag("enchantment")),
-        value(TypeFilter::Planeswalker, tag("planeswalker")),
-        value(TypeFilter::Permanent, tag("permanent")),
-    ))
-    .parse(input)
-}
-
-/// Nom combinator: separator between enchant list legs. Covers serial-comma
-/// (", or "/", and "), bare comma (", "), and bare conjunction (" or "/" and ")
-/// forms so "A, B, or C", "A, B, C", and "A or B" all compose uniformly.
-fn parse_enchant_list_sep(input: &str) -> nom::IResult<&str, (), OracleError<'_>> {
-    value(
-        (),
-        alt((
-            tag(", or "),
-            tag(", and "),
-            tag(", "),
-            tag(" or "),
-            tag(" and "),
-        )),
-    )
-    .parse(input)
-}
-
-/// Nom combinator: parse a leg list with serial-comma or bare-conjunction
-/// separators. Returns the list in source order.
-fn parse_enchant_type_list(input: &str) -> nom::IResult<&str, Vec<TypeFilter>, OracleError<'_>> {
-    use nom::multi::many0;
-    use nom::sequence::preceded;
-
-    let (input, first) = parse_enchant_type_leg(input)?;
-    let (input, rest) =
-        many0(preceded(parse_enchant_list_sep, parse_enchant_type_leg)).parse(input)?;
-    let mut legs = Vec::with_capacity(rest.len() + 1);
-    legs.push(first);
-    legs.extend(rest);
-    Ok((input, legs))
-}
-
-/// Nom combinator: optional trailing controller clause. Ordered longest-first
-/// so "an opponent controls" isn't shadowed by "opponent controls".
-fn parse_enchant_controller_suffix(
-    input: &str,
-) -> nom::IResult<&str, ControllerRef, OracleError<'_>> {
-    alt((
-        value(ControllerRef::You, tag(" you control")),
-        value(ControllerRef::Opponent, tag(" an opponent controls")),
-        value(ControllerRef::Opponent, tag(" opponent controls")),
-    ))
-    .parse(input)
-}
+// Enchant combinators moved to `parser/oracle_nom/enchant.rs` so the MTGJSON
+// `FromStr` path (`types/keywords.rs::parse_enchant_target`) and this Oracle-
+// line parser compose against the same atoms.
+use super::oracle_nom::enchant::{parse_enchant_controller_suffix, parse_enchant_type_list};
 
 /// CR 303.4a + CR 702.5: Parse the Aura's "Enchant [types]" line into a single
 /// `Keyword::Enchant(TargetFilter)`. Multi-type lists ("Enchant creature, land,
