@@ -7192,6 +7192,20 @@ fn has_anaphoric_reference(lower: &str) -> bool {
 /// Replace the target filter on an effect with ParentTarget.
 /// Used for anaphoric "it"/"that creature" references in compound sub-effects.
 fn replace_target_with_parent(effect: &mut Effect) {
+    // CR 115.10a: a target carrying the `Another` property excludes the
+    // referenced object by definition, so it is never the parent target — an
+    // anaphor rewrite must not collapse it to ParentTarget (Fumble: "…attach
+    // them to another creature", where the attach destination is a fresh,
+    // distinct choice, not the bounced creature).
+    if let Some(TargetFilter::Typed(tf)) = effect.target_filter() {
+        if tf
+            .properties
+            .iter()
+            .any(|p| matches!(p, FilterProp::Another))
+        {
+            return;
+        }
+    }
     match effect {
         Effect::Sacrifice { target, .. }
             if target_filter_controller_ref(target)
@@ -7221,7 +7235,13 @@ fn replace_target_with_parent(effect: &mut Effect) {
         | Effect::RemoveCounter { target, .. } => {
             *target = TargetFilter::ParentTarget;
         }
-        Effect::ChangeZone { target, .. } | Effect::ChangeZoneAll { target, .. } => {
+        // CR 608.2c: a self-referential zone change ("Exile Venture Forth with
+        // three time counters on it") names the source via `~` (SelfRef); the
+        // "on it" anaphor is a trailing counter modifier, not the moved object.
+        // Leave SelfRef intact so the source still moves itself.
+        Effect::ChangeZone { target, .. } | Effect::ChangeZoneAll { target, .. }
+            if !matches!(target, TargetFilter::SelfRef) =>
+        {
             *target = TargetFilter::ParentTarget;
         }
         // CR 608.2c (issue #327): A `GenericEffect` carries both an outer
@@ -29131,6 +29151,68 @@ mod tests {
                 "intervening ParentTarget clause must not block the rewrite: {static_abilities:?}"
             ),
             other => panic!("expected clause 3 GenericEffect, got {other:?}"),
+        }
+    }
+
+    /// CR 608.2c (#548 over-rewrite regression): a self-referential zone change
+    /// names the source via `~` (lowered to `SelfRef`). The #548 transitivity
+    /// scan finds the typed antecedent earlier in the chain ("Put that card onto
+    /// the battlefield…"), but the rewriter must NOT collapse the SelfRef
+    /// zone-change target to ParentTarget — the trailing "with three time
+    /// counters on it" is a counter modifier on the source, not a reference to
+    /// the chosen object. (Venture Forth.)
+    #[test]
+    fn self_exile_change_zone_keeps_selfref_through_anaphor_scan() {
+        fn collect_zone_targets<'a>(def: &'a AbilityDefinition, out: &mut Vec<&'a TargetFilter>) {
+            if let Effect::ChangeZone { target, .. } | Effect::ChangeZoneAll { target, .. } =
+                def.effect.as_ref()
+            {
+                out.push(target);
+            }
+            if let Some(sub) = def.sub_ability.as_ref() {
+                collect_zone_targets(sub, out);
+            }
+        }
+        // `~` is the self-reference token the database substitutes for the
+        // card's own name before parsing — mirror that here (Venture Forth).
+        let def = parse_effect_chain(
+            "Exile cards from the top of your library until you exile a land card. Put that card onto the battlefield and the rest on the bottom of your library in a random order. Exile ~ with three time counters on it.",
+            AbilityKind::Spell,
+        );
+        let mut targets = Vec::new();
+        collect_zone_targets(&def, &mut targets);
+        assert!(
+            targets.iter().any(|t| matches!(t, TargetFilter::SelfRef)),
+            "the self-exile clause must keep SelfRef, not flip to ParentTarget: {targets:?}"
+        );
+    }
+
+    /// CR 115.10a (#548 over-rewrite regression): a target carrying the `Another`
+    /// property excludes the referenced object by definition, so the #548 anaphor
+    /// scan must never collapse it to ParentTarget. (Fumble: "Return target
+    /// creature… then attach them to another creature." — the attach destination
+    /// is a fresh, distinct creature, not the bounced one.)
+    #[test]
+    fn attach_to_another_creature_keeps_another_through_anaphor_scan() {
+        fn find_attach_target(def: &AbilityDefinition) -> Option<&TargetFilter> {
+            if let Effect::Attach { target, .. } = def.effect.as_ref() {
+                return Some(target);
+            }
+            def.sub_ability.as_ref().and_then(|s| find_attach_target(s))
+        }
+        let def = parse_effect_chain(
+            "Return target creature to its owner's hand. Gain control of all Auras and Equipment that were attached to it, then attach them to another creature.",
+            AbilityKind::Spell,
+        );
+        let target = find_attach_target(&def).expect("attach clause");
+        match target {
+            TargetFilter::Typed(tf) => assert!(
+                tf.properties
+                    .iter()
+                    .any(|p| matches!(p, FilterProp::Another)),
+                "attach destination must keep the Another property, not flip to ParentTarget: {target:?}"
+            ),
+            other => panic!("expected Typed{{Another}} attach destination, got {other:?}"),
         }
     }
 
