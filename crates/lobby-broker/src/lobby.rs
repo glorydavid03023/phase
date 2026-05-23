@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 use crate::env::BrokerEnv;
@@ -62,13 +63,14 @@ pub struct JoinTargetInfo {
     pub reservation_expires_at_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LobbyReservation {
     pub token: String,
     pub display_name: String,
     pub expires_at_ms: Option<u64>,
 }
 
+#[derive(Serialize, Deserialize)]
 struct LobbyGameMeta {
     host_name: String,
     created_at: u64,
@@ -88,6 +90,7 @@ struct LobbyGameMeta {
     reservations: HashMap<String, LobbyReservation>,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct LobbyManager {
     games: HashMap<String, LobbyGameMeta>,
 }

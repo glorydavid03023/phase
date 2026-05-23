@@ -1,41 +1,93 @@
-import {
-  PROTOCOL_VERSION,
-  type LobbyGame,
-  type RoomSecret,
-  type SocketState,
-} from "./protocol";
+// Durable Object shell for the official phase.rs lobby broker.
+//
+// This is a THIN imperative shell around the compiled Rust `lobby-broker` core
+// (lobby-worker/broker-wasm -> broker-wasm-pkg). All protocol parsing, dispatch,
+// reservations, capacity caps, build-commit gating and staleness reaping live in
+// Rust — the SAME code the native phase-server runs (extracted in Phase A), so
+// the two deployments behave identically by construction. The shell only:
+//   - owns the WebSocket Hibernation lifecycle + DO storage,
+//   - forwards raw frames into `WasmBroker.handle`,
+//   - interprets the returned `Outbound` side effects over its transport,
+//   - snapshots the broker to storage after mutations (a hibernated DO loses
+//     in-memory state), and
+//   - drives the reaper from a DO alarm (no tokio interval in a Worker).
+//
+// Mirrors the engine -> engine-wasm -> React-adapter pattern: the WASM owns the
+// logic, the host language is a serialization boundary with zero game logic.
 
-// ⚠️ STUB. Throwaway TS reimplementation of the LobbyOnly broker happy-path
-// (handshake + lobby list + P2P host/join), enough to test the Cloudflare
-// path end-to-end against a real client. It deliberately OMITS the security
-// hardening the Rust server has (rate limiting, MAX_LOBBY_ENTRIES cap, seat
-// reservations, the expiry reaper) — all of which arrive for free when the
-// compiled Rust `lobby-broker` crate replaces this body
-// (.planning/lobby-failover-federation-plan.md §4a, §6c, §6f).
+import wasmModule from "./broker-wasm-pkg/broker_bg.wasm";
+import { initSync, WasmBroker } from "./broker-wasm-pkg/broker.js";
+import { PROTOCOL_VERSION } from "./protocol";
 
-const SERVER_VERSION = "lobby-stub";
+// Instantiate the broker WASM once per isolate, at top level (CF imports `.wasm`
+// as a WebAssembly.Module; `initSync` wires the wasm-bindgen imports
+// synchronously). Doing this here — not per request — avoids re-instantiation.
+initSync({ module: wasmModule });
+
+const SERVER_VERSION = "lobby-rs";
 // build_commit is cosmetic for a LobbyOnly broker — the gameplay-relevant gate
-// is each room's host_build_commit (the host client's hash), not the broker's.
-const SERVER_BUILD_COMMIT = "lobby-stub-dev";
+// is each room's host_build_commit (enforced inside the Rust core), not the
+// broker's own build.
+const SERVER_BUILD_COMMIT = "lobby-rs";
 
-const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+// Staleness reaper. `REAP_TIMEOUT_SECONDS` mirrors the native phase-server
+// (`broker.reap_expired(300, …)`). The DO alarm interval is coarser than the
+// native 10s tokio tick because each alarm wakes the (otherwise hibernating) DO:
+// 60s reaps a stale entry within a minute of the 300s threshold while still
+// letting a fully idle lobby hibernate (the alarm stops rescheduling when empty).
+const REAP_TIMEOUT_SECONDS = 300;
+const REAP_INTERVAL_MS = 60_000;
+
+/// Per-socket state, mirroring `lobby_broker::ConnState::default()`. Stored in
+/// the WebSocket attachment as a structured object; stringified across the WASM
+/// boundary and written back from each call's result.
+const DEFAULT_CONN = {
+  client_hello: null,
+  subscribed: false,
+  host_game: null,
+  reservations: [],
+};
+
+/** Boundary mirror of `lobby_broker_wasm::OutboundDto`. */
+interface OutboundDto {
+  kind: "ToSelf" | "ToSubscribers" | "AddSubscriber" | "RemoveSubscriber" | "SendPlayerCountToSelf";
+  msg?: unknown;
+}
+
+/** Boundary mirror of `lobby_broker_wasm::CallResult`. */
+interface CallResult {
+  conn: unknown;
+  outbounds: OutboundDto[];
+  dirty: boolean;
+  reject?: string;
+}
+
+const SNAPSHOT_KEY = "broker_snapshot";
 
 export class LobbyDO {
   private ctx: DurableObjectState;
-  /** In-memory cache of the persisted room map; rebuilt from DO storage on
-   *  first use after a cold start / hibernation wake. */
-  private rooms: Map<string, LobbyGame> | null = null;
+  /** In-memory broker, restored from the DO-storage snapshot on first use after
+   *  a cold start / hibernation wake. */
+  private broker: WasmBroker | null = null;
 
   constructor(ctx: DurableObjectState, _env: unknown) {
     this.ctx = ctx;
+  }
+
+  private async loadBroker(): Promise<WasmBroker> {
+    if (!this.broker) {
+      const snap = await this.ctx.storage.get<string>(SNAPSHOT_KEY);
+      this.broker = snap ? WasmBroker.from_snapshot(snap) : new WasmBroker();
+    }
+    return this.broker;
   }
 
   // ── HTTP / WS entry ────────────────────────────────────────────────────
 
   async fetch(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade") !== "websocket") {
-      // Plain GET → version/health endpoint. Handy for the deploy smoke check
-      // (`curl https://<worker>/` → asserts protocol_version).
+      // Plain GET → version/health endpoint (deploy smoke check asserts
+      // protocol_version == released client's).
       return Response.json({
         mode: "LobbyOnly",
         protocol_version: PROTOCOL_VERSION,
@@ -47,93 +99,50 @@ export class LobbyDO {
     // Hibernation API: the runtime owns the socket and wakes the DO via the
     // webSocket* handlers, so an idle lobby incurs no duration charge.
     this.ctx.acceptWebSocket(server);
-    this.setState(server, { subscribed: false, buildCommit: "" });
-    // Unprompted ServerHello — the client waits for this and validates
-    // protocol_version before sending anything.
+    server.serializeAttachment(DEFAULT_CONN);
     this.sendHello(server);
+    // A new connection changes the live player count for existing subscribers.
+    this.broadcastPlayerCount();
     return new Response(null, { status: 101, webSocket: client });
   }
 
   // ── WebSocket Hibernation handlers ─────────────────────────────────────
 
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
-    let msg: { type: string; data?: Record<string, unknown> };
-    try {
-      const text = typeof raw === "string" ? raw : new TextDecoder().decode(raw);
-      msg = JSON.parse(text);
-    } catch {
-      return; // drop malformed frames silently
+    const broker = await this.loadBroker();
+    const conn = ws.deserializeAttachment() ?? DEFAULT_CONN;
+    const text = typeof raw === "string" ? raw : new TextDecoder().decode(raw);
+
+    const result = JSON.parse(broker.handle(JSON.stringify(conn), text, Date.now())) as CallResult;
+
+    if (result.reject) {
+      // Unknown tag / malformed frame — the Rust parser rejected it. Drop it
+      // (no state change, attachment untouched), but log so it surfaces in
+      // Workers Logs.
+      console.warn({ event: "lobby_frame_rejected", reason: result.reject });
+      return;
     }
 
-    const state = this.getState(ws);
-    const data = msg.data ?? {};
+    ws.serializeAttachment(result.conn);
+    this.interpret(ws, result.outbounds);
 
-    switch (msg.type) {
-      case "ClientHello": {
-        state.buildCommit = (data.build_commit as string) ?? "";
-        this.setState(ws, state);
-        return;
-      }
-
-      case "SubscribeLobby": {
-        state.subscribed = true;
-        this.setState(ws, state);
-        const rooms = await this.loadRooms();
-        this.send(ws, "LobbyUpdate", { games: [...rooms.values()] });
-        this.send(ws, "PlayerCount", { count: this.playerCount() });
-        return;
-      }
-
-      case "UnsubscribeLobby": {
-        state.subscribed = false;
-        this.setState(ws, state);
-        return;
-      }
-
-      case "Ping": {
-        this.send(ws, "Pong", { timestamp: data.timestamp ?? 0 });
-        return;
-      }
-
-      case "CreateGameWithSettings": {
-        await this.handleCreate(ws, state, data);
-        return;
-      }
-
-      case "UpdateLobbyMetadata": {
-        await this.handleUpdateMetadata(state, data);
-        return;
-      }
-
-      case "UnregisterLobby": {
-        await this.handleUnregister(ws, state, data.game_code as string);
-        return;
-      }
-
-      case "LookupJoinTarget": {
-        await this.handleJoin(ws, data, /* lookupOnly */ true);
-        return;
-      }
-
-      case "JoinGameWithPassword": {
-        await this.handleJoin(ws, data, /* lookupOnly */ false);
-        return;
-      }
-
-      default:
-        // Stub ignores the rest of the protocol (game-session messages, drafts,
-        // seat mutation, reservations). The Rust broker implements the full set.
-        return;
+    if (result.dirty) {
+      await this.ctx.storage.put(SNAPSHOT_KEY, broker.snapshot());
+      await this.ensureAlarm();
     }
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
-    const state = this.getState(ws);
-    if (state.ownedGameCode) {
-      await this.removeRoom(state.ownedGameCode);
-    }
-    // PlayerCount changed; the closing socket is already excluded from
-    // getWebSockets() by the time this fires.
+    const broker = await this.loadBroker();
+    const conn = ws.deserializeAttachment() ?? DEFAULT_CONN;
+    // Releases the connection's reservations + removes any hosted entry; emits
+    // LobbyGameUpdated/Removed to the remaining subscribers (the closing socket
+    // is already excluded from getWebSockets()).
+    const result = JSON.parse(broker.on_disconnect(JSON.stringify(conn))) as CallResult;
+    this.interpret(ws, result.outbounds);
+    await this.ctx.storage.put(SNAPSHOT_KEY, broker.snapshot());
+    // Player-count decrement+broadcast is shell-owned on close (the broker
+    // cannot know the socket set).
     this.broadcastPlayerCount();
   }
 
@@ -141,192 +150,96 @@ export class LobbyDO {
     await this.webSocketClose(ws);
   }
 
-  // ── Handlers ───────────────────────────────────────────────────────────
+  // ── Staleness reaper (DO alarm) ────────────────────────────────────────
 
-  private async handleCreate(
-    ws: WebSocket,
-    state: SocketState,
-    data: Record<string, unknown>,
-  ): Promise<void> {
-    const rooms = await this.loadRooms();
-    const code = this.genCode(rooms);
-    const hostPeerId = (data.host_peer_id as string) ?? "";
-    const formatConfig = (data.format_config as Record<string, unknown>) ?? null;
-
-    const game: LobbyGame = {
-      game_code: code,
-      host_name: (data.display_name as string) ?? "Anonymous",
-      created_at: Date.now(),
-      has_password: !!data.password,
-      host_version: "",
-      host_build_commit: state.buildCommit,
-      current_players: 1,
-      max_players: (data.player_count as number) ?? 2,
-      format: (formatConfig?.format as string) ?? null,
-      room_name: (data.room_name as string) ?? null,
-      // is_p2p is derived from host_peer_id presence (matches the Rust server).
-      is_p2p: hostPeerId !== "",
-      is_sandbox: !!formatConfig?.allow_debug_actions,
-    };
-
-    rooms.set(code, game);
-    await this.saveRooms();
-    const secret: RoomSecret = {
-      hostPeerId,
-      password: (data.password as string) ?? null,
-      formatConfig,
-      matchConfig: data.match_config ?? {},
-    };
-    await this.ctx.storage.put(`secret:${code}`, secret);
-
-    state.ownedGameCode = code;
-    this.setState(ws, state);
-
-    this.send(ws, "GameCreated", { game_code: code, player_token: crypto.randomUUID() });
-    this.broadcastToSubscribers("LobbyGameAdded", { game });
-    this.broadcastPlayerCount();
-  }
-
-  private async handleUpdateMetadata(
-    state: SocketState,
-    data: Record<string, unknown>,
-  ): Promise<void> {
-    const code = data.game_code as string;
-    // Ownership check: only the socket that registered the room may mutate it.
-    if (state.ownedGameCode !== code) return;
-    const rooms = await this.loadRooms();
-    const game = rooms.get(code);
-    if (!game) return;
-    game.current_players = (data.current_players as number) ?? game.current_players;
-    game.max_players = (data.max_players as number) ?? game.max_players;
-    rooms.set(code, game);
-    await this.saveRooms();
-    this.broadcastToSubscribers("LobbyGameUpdated", { game });
-  }
-
-  private async handleUnregister(
-    ws: WebSocket,
-    state: SocketState,
-    code: string,
-  ): Promise<void> {
-    if (state.ownedGameCode !== code) return;
-    await this.removeRoom(code);
-    state.ownedGameCode = undefined;
-    this.setState(ws, state);
-  }
-
-  private async handleJoin(
-    ws: WebSocket,
-    data: Record<string, unknown>,
-    lookupOnly: boolean,
-  ): Promise<void> {
-    const code = data.game_code as string;
-    const rooms = await this.loadRooms();
-    const game = rooms.get(code);
-    if (!game) {
-      this.send(ws, "Error", { message: "Game not found" });
-      return;
-    }
-    const secret = await this.ctx.storage.get<RoomSecret>(`secret:${code}`);
-    if (secret?.password && secret.password !== (data.password as string | undefined)) {
-      this.send(ws, "PasswordRequired", { game_code: code });
-      return;
-    }
-
-    const common = {
-      game_code: code,
-      is_p2p: game.is_p2p,
-      format_config: secret?.formatConfig ?? null,
-      match_config: secret?.matchConfig ?? {},
-      player_count: game.max_players,
-      filled_seats: game.current_players,
-    };
-
-    if (lookupOnly) {
-      // JoinTargetInfo has no host_peer_id (read-only routing metadata).
-      this.send(ws, "JoinTargetInfo", common);
-    } else {
-      // PeerInfo hands the guest the host's peer id so it can dial P2P.
-      this.send(ws, "PeerInfo", { ...common, host_peer_id: secret?.hostPeerId ?? "" });
+  async alarm(): Promise<void> {
+    const broker = await this.loadBroker();
+    const outbounds = JSON.parse(
+      broker.reap_expired(REAP_TIMEOUT_SECONDS, Date.now()),
+    ) as OutboundDto[];
+    // Reaper emits only ToSubscribers(LobbyGameRemoved) — no connection scope.
+    for (const o of outbounds) this.dispatchOutbound(null, o);
+    await this.ctx.storage.put(SNAPSHOT_KEY, broker.snapshot());
+    // Keep reaping while entries remain; an empty lobby stops rescheduling so
+    // the DO can hibernate fully.
+    if (!broker.is_empty()) {
+      await this.ctx.storage.setAlarm(Date.now() + REAP_INTERVAL_MS);
     }
   }
 
-  // ── Storage / state helpers ────────────────────────────────────────────
+  // ── Outbound side-effect interpretation ────────────────────────────────
 
-  private async loadRooms(): Promise<Map<string, LobbyGame>> {
-    if (!this.rooms) {
-      const stored = await this.ctx.storage.get<Record<string, LobbyGame>>("rooms");
-      this.rooms = new Map(Object.entries(stored ?? {}));
+  private interpret(ws: WebSocket, outbounds: OutboundDto[]): void {
+    for (const o of outbounds) this.dispatchOutbound(ws, o);
+  }
+
+  private dispatchOutbound(ws: WebSocket | null, o: OutboundDto): void {
+    switch (o.kind) {
+      case "ToSelf":
+        if (ws) ws.send(JSON.stringify(o.msg));
+        return;
+      case "ToSubscribers":
+        this.broadcastToSubscribers(JSON.stringify(o.msg));
+        return;
+      case "SendPlayerCountToSelf":
+        if (ws) ws.send(this.playerCountFrame());
+        return;
+      case "AddSubscriber":
+      case "RemoveSubscriber":
+        // No-op: the subscriber registry IS each socket's persisted
+        // ConnState.subscribed (set by the broker, read in
+        // broadcastToSubscribers). A separate in-memory set would be lost on
+        // hibernation, so the attachment is the single source of truth.
+        return;
     }
-    return this.rooms;
-  }
-
-  private async saveRooms(): Promise<void> {
-    if (this.rooms) {
-      await this.ctx.storage.put("rooms", Object.fromEntries(this.rooms));
-    }
-  }
-
-  private async removeRoom(code: string): Promise<void> {
-    const rooms = await this.loadRooms();
-    if (rooms.delete(code)) {
-      await this.saveRooms();
-      await this.ctx.storage.delete(`secret:${code}`);
-      this.broadcastToSubscribers("LobbyGameRemoved", { game_code: code });
-    }
-  }
-
-  private setState(ws: WebSocket, state: SocketState): void {
-    ws.serializeAttachment(state);
-  }
-
-  private getState(ws: WebSocket): SocketState {
-    return (
-      (ws.deserializeAttachment() as SocketState | null) ?? {
-        subscribed: false,
-        buildCommit: "",
-      }
-    );
   }
 
   // ── Messaging helpers ──────────────────────────────────────────────────
 
-  private send(ws: WebSocket, type: string, data?: unknown): void {
-    // Adjacently-tagged enum: unit variants omit `data`, the rest carry it.
-    ws.send(JSON.stringify(data === undefined ? { type } : { type, data }));
-  }
-
-  private sendHello(ws: WebSocket): void {
-    this.send(ws, "ServerHello", {
-      server_version: SERVER_VERSION,
-      build_commit: SERVER_BUILD_COMMIT,
-      protocol_version: PROTOCOL_VERSION,
-      mode: "LobbyOnly",
-    });
-  }
-
-  private playerCount(): number {
-    return this.ctx.getWebSockets().length;
-  }
-
-  private broadcastToSubscribers(type: string, data: unknown): void {
-    for (const ws of this.ctx.getWebSockets()) {
-      if (this.getState(ws).subscribed) this.send(ws, type, data);
+  private broadcastToSubscribers(frame: string): void {
+    for (const sock of this.ctx.getWebSockets()) {
+      if (this.isSubscribed(sock)) sock.send(frame);
     }
   }
 
   private broadcastPlayerCount(): void {
-    this.broadcastToSubscribers("PlayerCount", { count: this.playerCount() });
+    const frame = this.playerCountFrame();
+    for (const sock of this.ctx.getWebSockets()) {
+      if (this.isSubscribed(sock)) sock.send(frame);
+    }
   }
 
-  private genCode(rooms: Map<string, LobbyGame>): string {
-    let code: string;
-    do {
-      code = Array.from(
-        { length: 5 },
-        () => CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)],
-      ).join("");
-    } while (rooms.has(code));
-    return code;
+  private isSubscribed(sock: WebSocket): boolean {
+    const conn = sock.deserializeAttachment() as { subscribed?: boolean } | null;
+    return conn?.subscribed === true;
+  }
+
+  private playerCountFrame(): string {
+    // PlayerCount is shell-owned: the broker emits SendPlayerCountToSelf and the
+    // shell fills the count from the live socket set.
+    return JSON.stringify({
+      type: "PlayerCount",
+      data: { count: this.ctx.getWebSockets().length },
+    });
+  }
+
+  private async ensureAlarm(): Promise<void> {
+    if ((await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(Date.now() + REAP_INTERVAL_MS);
+    }
+  }
+
+  private sendHello(ws: WebSocket): void {
+    ws.send(
+      JSON.stringify({
+        type: "ServerHello",
+        data: {
+          server_version: SERVER_VERSION,
+          build_commit: SERVER_BUILD_COMMIT,
+          protocol_version: PROTOCOL_VERSION,
+          mode: "LobbyOnly",
+        },
+      }),
+    );
   }
 }

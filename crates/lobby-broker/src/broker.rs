@@ -11,6 +11,7 @@
 //! dispatch (and the mode-agnostic Subscribe/Ping arms, whose behavior is
 //! identical across modes), so every entry the core sees is a P2P entry.
 
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::env::BrokerEnv;
@@ -26,7 +27,7 @@ pub const MAX_LOBBY_ENTRIES: usize = 200;
 /// The client's self-reported identity from `ClientHello`. `build_commit` is
 /// the join-compatibility gate; `client_version` is the display-only string
 /// stamped into a registered entry's `host_version`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientHelloInfo {
     pub client_version: String,
     pub build_commit: String,
@@ -37,7 +38,7 @@ pub struct ClientHelloInfo {
 /// the shell never writes them, it only reads them back to wire up transport
 /// (e.g. mapping `subscribed` to its subscriber registry is implied by the
 /// `AddSubscriber`/`RemoveSubscriber` outbounds).
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnState {
     /// Client identity from `ClientHello`. `build_commit` gates joins;
     /// `client_version` is stamped into a registered entry's `host_version`.
@@ -93,6 +94,14 @@ pub fn check_build_commit(host_commit: &str, guest_commit: &str) -> BuildCommitC
 
 /// The matchmaking broker. Wraps the pure [`LobbyManager`]; all broker dispatch
 /// rules (ownership, subscription, reservation, gating) live here, written once.
+///
+/// `Serialize`/`Deserialize` exist for the Cloudflare Durable Object shell,
+/// which snapshots the whole broker to DO storage after each mutating message
+/// (a hibernated DO loses in-memory state). The native phase-server shell keeps
+/// it in an `Arc<Mutex>` and never serializes it. The snapshot format is an
+/// internal implementation detail, versioned by the broker code — not a wire
+/// contract; the shell falls back to `Broker::new()` if a snapshot fails to load.
+#[derive(Serialize, Deserialize)]
 pub struct Broker {
     lobby: LobbyManager,
 }

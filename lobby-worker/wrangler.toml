@@ -1,15 +1,21 @@
 # Cloudflare Worker + Durable Object for the official phase.rs lobby broker.
 #
-# STUB / plumbing-validation phase: the DO body (src/lobby-do.ts) is a
-# hand-written TS mirror of the LobbyOnly protocol, used only to prove the
-# Cloudflare path end-to-end (wrangler -> DO -> WebSocket Hibernation ->
-# client handshake) before the real broker lands. It will be replaced by the
-# compiled Rust `lobby-broker` crate (WASM) per
-# .planning/lobby-failover-federation-plan.md §4a.
+# The DO body (src/lobby-do.ts) is a thin imperative shell around the compiled
+# Rust `lobby-broker` core (lobby-worker/broker-wasm -> src/broker-wasm-pkg).
+# All protocol parsing, dispatch, reservations, capacity caps, build-commit
+# gating, and the staleness reaper live in Rust — the SAME code phase-server
+# runs natively — so the two deployments behave identically by construction.
 
 name = "phase-lobby"
 main = "src/index.ts"
 compatibility_date = "2026-05-01"
+
+# Build the Rust broker to WASM (+ wasm-bindgen glue) before bundling. wrangler
+# runs this on `wrangler deploy` and `wrangler dev`; the generated glue under
+# src/broker-wasm-pkg/ is gitignored and regenerated. Requires the wasm32 target,
+# wasm-bindgen-cli (0.2.121), and wasm-opt — the release workflow sets these up.
+[build]
+command = "bash ../scripts/build-broker-wasm.sh release"
 
 # Single global lobby = one DO instance addressed by a fixed name ("global").
 [[durable_objects.bindings]]
@@ -29,10 +35,15 @@ new_sqlite_classes = ["LobbyDO"]
 # it's invisible there. These logs (and the zone HTTP-status view) are the only
 # way to actually see relay-mint failures. Free tier: 200k logs/day, 3-day
 # retention; head_sampling_rate=1 logs every request (this endpoint is low-volume
-# and every relay failure matters).
+# and every relay failure matters). `enabled = true` persists logs (incl.
+# invocation logs); `persist`/`traces` from the dashboard's exported blob are NOT
+# documented wrangler keys and would fail deploy validation, so they are omitted.
 [observability]
 enabled = true
 head_sampling_rate = 1
+
+[observability.logs]
+invocation_logs = true
 
 [vars]
 # Cloudflare Realtime TURN key ID (NOT secret — useless without the API token,
