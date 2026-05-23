@@ -71,6 +71,7 @@ function objectImageProps(obj: GameObject) {
     faceName,
     isToken,
     tokenFilters: isToken ? tokenFiltersForObject(obj) : undefined,
+    tokenImageRef: isToken ? obj.token_image_ref : undefined,
   };
 }
 

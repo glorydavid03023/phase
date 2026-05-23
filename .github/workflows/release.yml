@@ -251,6 +251,7 @@ jobs:
       - name: Generate Scryfall data
         run: |
           ./scripts/gen-scryfall-images.sh
+          ./scripts/gen-scryfall-token-images.sh
           ./scripts/gen-scryfall-sets.sh
           ./scripts/gen-scryfall-printings.sh
 

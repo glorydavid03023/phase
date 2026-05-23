@@ -43,6 +43,9 @@ if [ ! -f "$MTGJSON_SET_LIST_FILE" ]; then
   curl -L -o "$MTGJSON_SET_LIST_FILE" "https://mtgjson.com/api/v5/SetList.json"
 fi
 
+echo "Ensuring MTGJSON token set files..."
+./scripts/fetch-token-sets.sh
+
 # AllDeckFiles is shipped as a tarball of per-deck JSONs. Extract to
 # data/mtgjson/decks/ once; refreshing means deleting the directory.
 MTGJSON_DECKS_DIR="$DATA_DIR/mtgjson/decks"
@@ -123,6 +126,9 @@ WARNING_PATTERNS_OUTPUT_TMP="${WARNING_PATTERNS_OUTPUT}.tmp"
 META_OUTPUT_TMP="${META_OUTPUT}.tmp"
 
 # --- Group 1: card-data + card-names (expensive, independent of coverage) ---
+echo "Generating token preset catalog from MTGJSON set files..."
+cargo run --profile tool --bin tokens-gen -- --input "$DATA_DIR/mtgjson/sets" --output crates/engine/data/known-tokens.toml
+
 track_tmp "$OUTPUT_TMP"
 track_tmp "$NAMES_OUTPUT_TMP"
 run_tool_with_recovery \

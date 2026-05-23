@@ -126,6 +126,7 @@ function CardPreviewInner({
     faceIndex: defaultFaceIndex,
     isToken,
     tokenFilters: isToken && obj ? tokenFiltersForObject(obj) : undefined,
+    tokenImageRef: isToken && obj ? obj.token_image_ref : undefined,
     oracleId: obj?.printed_ref?.oracle_id,
     faceName: obj?.printed_ref?.face_name,
     scryfallId,

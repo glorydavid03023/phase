@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import {
   fetchCardImageByOracleId,
   fetchCardImageUrl,
+  fetchTokenImageByRef,
   fetchTokenImageUrl,
   findPrintingById,
   getCardPrintings,
@@ -10,6 +11,7 @@ import {
   resolvePrintingImageUrl,
 } from "../services/scryfall.ts";
 import type { ImageSize, PrintingEntry, TokenSearchFilters } from "../services/scryfall.ts";
+import type { TokenImageRef } from "../adapter/types.ts";
 import { usePreferencesStore, registerStrategyCacheClearFn } from "../stores/preferencesStore.ts";
 import type { ArtChainEntry } from "../stores/preferencesStore.ts";
 
@@ -23,6 +25,7 @@ interface UseCardImageOptions {
   faceIndex?: number;
   isToken?: boolean;
   tokenFilters?: TokenSearchFilters;
+  tokenImageRef?: TokenImageRef | null;
   /** Canonical lookup id from `printed_ref.oracle_id`. When provided, the
    * Scryfall service resolves the image by oracle id (preferred) and
    * `cardName`/`faceIndex` are used only as cache-key disambiguators and
@@ -182,6 +185,7 @@ function imageRequestKey(
   filterColors: string,
   filterSubtypes: string,
   filterHasAbilities: boolean | null,
+  tokenImageRefKey: string,
   oracleId: string,
   faceName: string,
 ): string {
@@ -195,6 +199,7 @@ function imageRequestKey(
     filterColors,
     filterSubtypes,
     String(filterHasAbilities),
+    tokenImageRefKey,
   ].join("|");
 }
 
@@ -218,6 +223,7 @@ async function acquireCachedImageSrc(
   filterColors: string,
   filterSubtypes: string,
   filterHasAbilities: boolean | null,
+  tokenImageRef: TokenImageRef | null,
   oracleId: string,
   faceName: string,
 ): Promise<string | null> {
@@ -238,7 +244,15 @@ async function acquireCachedImageSrc(
   entry.promise = (async () => {
     let remoteSrc: string | null;
     if (isToken) {
-      remoteSrc = await fetchTokenImageUrl(cardName, size, {
+      remoteSrc = null;
+      if (tokenImageRef) {
+        try {
+          remoteSrc = await fetchTokenImageByRef(tokenImageRef, size);
+        } catch {
+          remoteSrc = null;
+        }
+      }
+      remoteSrc ??= await fetchTokenImageUrl(cardName, size, {
         power: filterPower,
         toughness: filterToughness,
         colors: filterColors ? filterColors.split(",") : undefined,
@@ -272,6 +286,14 @@ export function useCardImage(
   const faceIndex = options?.faceIndex ?? 0;
   const isToken = options?.isToken ?? false;
   const tokenFilters = options?.tokenFilters;
+  const tokenImageRef = options?.tokenImageRef ?? null;
+  const tokenImageRefKey = tokenImageRef
+    ? [
+        tokenImageRef.scryfall_id,
+        tokenImageRef.scryfall_oracle_id ?? "",
+        tokenImageRef.face_name ?? "",
+      ].join(":")
+    : "";
   const oracleId = options?.oracleId ?? "";
   const faceName = options?.faceName ?? "";
   const scryfallId = options?.scryfallId ?? "";
@@ -337,6 +359,7 @@ export function useCardImage(
     filterColors,
     filterSubtypes,
     filterHasAbilities,
+    tokenImageRefKey,
     oracleId,
     faceName,
   );
@@ -372,6 +395,7 @@ export function useCardImage(
           filterColors,
           filterSubtypes,
           filterHasAbilities,
+          tokenImageRef,
           oracleId,
           faceName,
         );
@@ -401,6 +425,8 @@ export function useCardImage(
     filterPower,
     filterSubtypes,
     filterToughness,
+    tokenImageRef,
+    tokenImageRefKey,
     isToken,
     oracleId,
     overrideUrl,

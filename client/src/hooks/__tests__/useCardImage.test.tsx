@@ -12,6 +12,7 @@ describe("useCardImage", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.restoreAllMocks();
+    vi.doUnmock("../../services/scryfall.ts");
   });
 
   afterEach(() => {
@@ -68,6 +69,44 @@ describe("useCardImage", () => {
 
     await waitFor(() => {
       expect(result.current.src).toBe("https://img.example/dmu.jpg");
+    });
+  });
+
+  it("falls back to token search when exact token image metadata is unusable", async () => {
+    const fetchTokenImageByRef = vi.fn().mockRejectedValue(new Error("missing image"));
+    const fetchTokenImageUrl = vi.fn().mockResolvedValue("https://img.example/food.jpg");
+    vi.doMock("../../services/scryfall.ts", () => ({
+      fetchCardImageByOracleId: vi.fn(),
+      fetchCardImageUrl: vi.fn(),
+      fetchTokenImageByRef,
+      fetchTokenImageUrl,
+      findPrintingById: vi.fn(),
+      getCardPrintings: vi.fn().mockResolvedValue([]),
+      resolveOracleIdSync: vi.fn().mockReturnValue(null),
+      resolvePrintingImageUrl: vi.fn(),
+    }));
+
+    const { useCardImage } = await import("../useCardImage");
+    const { result } = renderHook(() =>
+      useCardImage("Food", {
+        isToken: true,
+        tokenImageRef: {
+          scryfall_id: "food-token-id",
+          scryfall_oracle_id: "food-oracle-id",
+          preset_id: "food-preset-id",
+        },
+      }),
+    );
+
+    await waitFor(() => {
+      expect(result.current.src).toBe("https://img.example/food.jpg");
+    });
+    expect(fetchTokenImageUrl).toHaveBeenCalledWith("Food", "normal", {
+      colors: undefined,
+      hasAbilities: undefined,
+      power: null,
+      subtypes: undefined,
+      toughness: null,
     });
   });
 });

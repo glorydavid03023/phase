@@ -728,10 +728,8 @@ pub enum DebugAction {
     },
     /// Explicitly run state-based actions. Use after a batch of raw mutations.
     RunStateBasedActions,
-    /// Create a token with explicit characteristics on the battlefield.
-    /// `characteristics` is the same body shape used by `TokenSpec` and
-    /// `TokenPreset`; the WASM handler fills in runtime fields (script_name,
-    /// source_id, controller, tapped, etc.) at create-time.
+    /// Create a token on the battlefield, either from a catalog preset or
+    /// explicit custom characteristics.
     ///
     /// `enter_with_counters` is plumbed straight through to
     /// `TokenSpec::enter_with_counters` and travels the same replacement
@@ -742,18 +740,51 @@ pub enum DebugAction {
     /// `TokenSpec::enter_with_counters` — same semantics, real pipeline.
     /// CR 122.6a (counters placed at ETB), CR 614.1 (replacement window),
     /// CR 704.5f (0-toughness SBA — why this field exists).
-    CreateToken {
-        owner: PlayerId,
-        characteristics: super::proposed_event::TokenCharacteristics,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        enter_with_counters: Vec<(CounterType, u32)>,
-    },
+    CreateToken { request: DebugTokenRequest },
     /// Create a token copy of an existing object using the real copy-token
     /// resolver (CR 707.2).
     CreateTokenCopy {
         source_id: ObjectId,
         owner: PlayerId,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum DebugTokenRequest {
+    Preset {
+        preset_id: String,
+        owner: PlayerId,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        enter_with_counters: Vec<(CounterType, u32)>,
+    },
+    Custom {
+        owner: PlayerId,
+        characteristics: super::proposed_event::TokenCharacteristics,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        enter_with_counters: Vec<(CounterType, u32)>,
+    },
+}
+
+impl DebugTokenRequest {
+    pub fn owner(&self) -> PlayerId {
+        match self {
+            Self::Preset { owner, .. } | Self::Custom { owner, .. } => *owner,
+        }
+    }
+
+    pub fn enter_with_counters(&self) -> &[(CounterType, u32)] {
+        match self {
+            Self::Preset {
+                enter_with_counters,
+                ..
+            }
+            | Self::Custom {
+                enter_with_counters,
+                ..
+            } => enter_with_counters,
+        }
+    }
 }
 
 impl DebugAction {
@@ -929,24 +960,27 @@ impl DebugAction {
                 player_label(*active_player)
             ),
             DebugAction::RunStateBasedActions => "RunStateBasedActions".to_string(),
-            DebugAction::CreateToken {
-                owner,
-                characteristics,
-                enter_with_counters,
-            } => {
-                let counters = if enter_with_counters.is_empty() {
+            DebugAction::CreateToken { request } => {
+                let counters = if request.enter_with_counters().is_empty() {
                     String::new()
                 } else {
-                    let parts: Vec<String> = enter_with_counters
+                    let parts: Vec<String> = request
+                        .enter_with_counters()
                         .iter()
                         .map(|(ct, n)| format!("{n} {}", ct.as_str()))
                         .collect();
                     format!(" with {}", parts.join(", "))
                 };
+                let token_label = match request {
+                    DebugTokenRequest::Preset { preset_id, .. } => preset_id.as_str(),
+                    DebugTokenRequest::Custom {
+                        characteristics, ..
+                    } => characteristics.display_name.as_str(),
+                };
                 format!(
                     "CreateToken ({} for {}{})",
-                    characteristics.display_name,
-                    player_label(*owner),
+                    token_label,
+                    player_label(request.owner()),
                     counters
                 )
             }

@@ -476,6 +476,13 @@ export interface TokenCharacteristics {
   keywords: Keyword[];
 }
 
+export interface TokenImageRef {
+  scryfall_id: string;
+  scryfall_oracle_id?: string | null;
+  face_name?: string | null;
+  preset_id: string;
+}
+
 // ── CR 701.57a + CR 702.85a: Cast/decline choice for Discover and Cascade ──
 
 export type CastChoice = { type: "Cast" } | { type: "Decline" };
@@ -614,6 +621,8 @@ export interface GameObject {
    *  (Lander, etc.). Used as alt-text / aria-label when the Scryfall token
    *  image is unavailable. Absent for non-predefined objects. */
   token_rules_text?: string;
+  token_image_ref?: TokenImageRef | null;
+  source_related_token_ids?: string[];
   unimplemented_mechanics?: string[];
   has_summoning_sickness?: boolean;
   has_mana_ability?: boolean;
@@ -1196,6 +1205,24 @@ export interface ActionResult {
 
 // ── Game Actions (discriminated union, tag="type", content="data") ───────
 
+export type DebugTokenRequest =
+  | {
+      type: "Preset";
+      data: {
+        preset_id: string;
+        owner: PlayerId;
+        enter_with_counters?: [CounterType, number][];
+      };
+    }
+  | {
+      type: "Custom";
+      data: {
+        owner: PlayerId;
+        characteristics: TokenCharacteristics;
+        enter_with_counters?: [CounterType, number][];
+      };
+    };
+
 export type DebugAction =
   | {
       type: "MoveToZone";
@@ -1239,9 +1266,7 @@ export type DebugAction =
   | {
       type: "CreateToken";
       data: {
-        owner: PlayerId;
-        characteristics: TokenCharacteristics;
-        enter_with_counters?: [CounterType, number][];
+        request: DebugTokenRequest;
       };
     }
   | { type: "CreateTokenCopy"; data: { source_id: ObjectId; owner: PlayerId } };

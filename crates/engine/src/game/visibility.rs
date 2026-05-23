@@ -453,6 +453,9 @@ fn hide_card(state: &mut GameState, obj_id: ObjectId) {
         obj.replacement_definitions.clear();
         obj.static_definitions.clear();
         obj.casting_permissions.clear();
+        obj.printed_ref = None;
+        obj.token_image_ref = None;
+        obj.source_related_token_ids.clear();
         obj.foretold = false;
     }
 }
@@ -531,6 +534,35 @@ mod tests {
 
         assert_eq!(filtered.may_trigger_auto_choices.len(), 1);
         assert_eq!(filtered.may_trigger_auto_choices[0].key.player, PlayerId(0));
+    }
+
+    #[test]
+    fn hidden_cards_redact_source_token_metadata() {
+        let mut state = GameState::new_two_player(42);
+        let card_id = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "Token Source".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&card_id).unwrap();
+            obj.source_related_token_ids = vec!["secret-token-id".to_string()];
+            obj.token_image_ref = Some(crate::types::card::TokenImageRef {
+                scryfall_id: "secret-scryfall-id".to_string(),
+                scryfall_oracle_id: Some("secret-oracle-id".to_string()),
+                face_name: None,
+                preset_id: "secret-preset-id".to_string(),
+            });
+        }
+
+        let filtered = filter_state_for_viewer(&state, PlayerId(0));
+        let hidden = filtered.objects.get(&card_id).unwrap();
+
+        assert_eq!(hidden.name, "Hidden Card");
+        assert!(hidden.source_related_token_ids.is_empty());
+        assert!(hidden.token_image_ref.is_none());
     }
 
     #[test]

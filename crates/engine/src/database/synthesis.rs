@@ -9112,6 +9112,7 @@ mod bloodthirst_synthesis_tests {
             rulings: Vec::new(),
             is_game_changer: false,
             identifiers: crate::database::mtgjson::AtomicIdentifiers {
+                scryfall_id: None,
                 scryfall_oracle_id: None,
             },
         };

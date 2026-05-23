@@ -1,4 +1,4 @@
-import type { GameFormat } from "../adapter/types";
+import type { GameFormat, TokenImageRef } from "../adapter/types";
 
 interface ScryfallDataEntry {
   oracle_id: string;
@@ -45,10 +45,12 @@ export interface PrintingEntry {
 
 type ScryfallDataMap = Record<string, ScryfallDataEntry>;
 type PrintingsDataMap = Record<string, PrintingEntry[]>;
+type TokenImagesDataMap = Record<string, ScryfallDataEntry & { scryfall_id: string; layout: string }>;
 
 let scryfallDataPromise: Promise<ScryfallDataMap | null> | null = null;
 let scryfallDataResolved: ScryfallDataMap | null = null;
 let printingsDataPromise: Promise<PrintingsDataMap | null> | null = null;
+let tokenImagesDataPromise: Promise<TokenImagesDataMap | null> | null = null;
 let scryfallQueue: Promise<void> = Promise.resolve();
 
 function loadScryfallData(): Promise<ScryfallDataMap | null> {
@@ -77,6 +79,15 @@ export function loadPrintingsData(): Promise<PrintingsDataMap | null> {
       .catch(() => null);
   }
   return printingsDataPromise;
+}
+
+function loadTokenImagesData(): Promise<TokenImagesDataMap | null> {
+  if (!tokenImagesDataPromise) {
+    tokenImagesDataPromise = fetch(__SCRYFALL_TOKEN_IMAGES_URL__)
+      .then((r) => r.json() as Promise<TokenImagesDataMap>)
+      .catch(() => null);
+  }
+  return tokenImagesDataPromise;
 }
 
 export function hasAlternatePrintingsSync(oracleId: string): boolean {
@@ -455,6 +466,35 @@ export async function fetchTokenImageUrl(
   }
 
   throw new Error(`No token image found for "${tokenName}"`);
+}
+
+export async function fetchTokenImageByRef(
+  ref: TokenImageRef,
+  size: ImageSize = "normal",
+): Promise<string | null> {
+  const data = await loadTokenImagesData();
+  if (!data) return null;
+
+  const idEntry = data[`scryfall:${ref.scryfall_id.toLowerCase()}`];
+  if (idEntry) {
+    const faceIndex = ref.face_name
+      ? Math.max(0, idEntry.face_names.indexOf(ref.face_name.toLowerCase()))
+      : 0;
+    return resolveImageUrl(idEntry, faceIndex, size, idEntry.name);
+  }
+
+  if (ref.scryfall_oracle_id) {
+    const faceKey = ref.face_name?.toLowerCase() ?? "";
+    const oracleEntry = data[`oracle:${ref.scryfall_oracle_id.toLowerCase()}:${faceKey}`];
+    if (oracleEntry) {
+      const faceIndex = ref.face_name
+        ? Math.max(0, oracleEntry.face_names.indexOf(ref.face_name.toLowerCase()))
+        : 0;
+      return resolveImageUrl(oracleEntry, faceIndex, size, oracleEntry.name);
+    }
+  }
+
+  return null;
 }
 
 async function fetchTokenImageFromLocal(

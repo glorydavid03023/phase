@@ -578,6 +578,8 @@ pub fn apply_create_token_after_replacement(
 
     for _ in 0..final_count {
         let ch = &spec.characteristics;
+        let token_image_ref =
+            crate::game::token_presets::find_exact_token_ref(state, spec.source_id, ch);
         let obj_id = zones::create_object(
             state,
             CardId(0),
@@ -592,6 +594,7 @@ pub fn apply_create_token_after_replacement(
             // True token from a TokenSpec — image lives in the generic-token
             // database (Treasure, Spirit, Saproling, Soldier, etc.).
             obj.display_source = DisplaySource::Token;
+            obj.token_image_ref = token_image_ref;
             let has_attrs = ch.power.is_some()
                 || ch.toughness.is_some()
                 || !ch.core_types.is_empty()
@@ -861,6 +864,34 @@ fn treasure_ability() -> AbilityDefinition {
     })
 }
 
+/// CR 111.10c: Gold — "Sacrifice this token: Add one mana of any color."
+fn gold_ability() -> AbilityDefinition {
+    AbilityDefinition::new(
+        AbilityKind::Activated,
+        Effect::Mana {
+            produced: ManaProduction::AnyOneColor {
+                count: QuantityExpr::Fixed { value: 1 },
+                color_options: vec![
+                    ManaColor::White,
+                    ManaColor::Blue,
+                    ManaColor::Black,
+                    ManaColor::Red,
+                    ManaColor::Green,
+                ],
+                contribution: ManaContribution::Base,
+            },
+            restrictions: vec![],
+            grants: vec![],
+            expiry: None,
+            target: None,
+        },
+    )
+    .cost(AbilityCost::Sacrifice {
+        target: TargetFilter::SelfRef,
+        count: 1,
+    })
+}
+
 /// CR 111.10b: Food — "{2}, {T}, Sacrifice this artifact: You gain 3 life."
 fn food_ability() -> AbilityDefinition {
     AbilityDefinition::new(
@@ -1116,6 +1147,7 @@ pub fn predefined_token_abilities(subtype: &str) -> Vec<AbilityDefinition> {
     match subtype {
         "Treasure" => vec![treasure_ability()],
         "Food" => vec![food_ability()],
+        "Gold" => vec![gold_ability()],
         "Clue" => vec![clue_ability()],
         "Blood" => vec![blood_ability()],
         "Powerstone" => vec![powerstone_ability()],
@@ -1123,7 +1155,7 @@ pub fn predefined_token_abilities(subtype: &str) -> Vec<AbilityDefinition> {
         "Spawn" => vec![spawn_ability()],
         "Lander" => vec![lander_ability()],
         "Mutagen" => vec![mutagen_ability()],
-        // TODO: Incubator (transform), Shard, Gold, Junk
+        // TODO: Incubator (transform), Shard, Junk
         _ => vec![],
     }
 }
@@ -1135,6 +1167,8 @@ pub fn predefined_token_abilities(subtype: &str) -> Vec<AbilityDefinition> {
 /// then renders no alt-text, as it does today.
 fn predefined_token_rules_text(subtype: &str) -> Option<&'static str> {
     match subtype {
+        // CR 111.10c
+        "Gold" => Some("Sacrifice this token: Add one mana of any color."),
         // CR 111.10u
         "Lander" => Some(
             "{2}, {T}, Sacrifice this token: Search your library for a basic \

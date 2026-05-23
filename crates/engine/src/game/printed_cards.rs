@@ -82,6 +82,7 @@ pub fn apply_card_face_to_object(obj: &mut GameObject, card_face: &CardFace) {
     obj.base_color = color;
     obj.base_characteristics_initialized = true;
     obj.printed_ref = printed_ref_from_face(card_face);
+    obj.source_related_token_ids = card_face.metadata.related_token_ids.clone();
     obj.modal = card_face.modal.clone();
     obj.additional_cost = card_face.additional_cost.clone();
     obj.strive_cost = card_face.strive_cost.clone();

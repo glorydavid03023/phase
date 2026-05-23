@@ -8,7 +8,7 @@ use crate::types::ability::{
     CastingPermission, CastingRestriction, ChosenAttribute, ChosenSubtypeKind, ModalChoice,
     ReplacementDefinition, SolveCondition, SpellCastingOption, StaticDefinition, TriggerDefinition,
 };
-use crate::types::card::{LayoutKind, PrintedCardRef};
+use crate::types::card::{LayoutKind, PrintedCardRef, TokenImageRef};
 use crate::types::card_type::{CardType, CoreType};
 use crate::types::counter::CounterType;
 use crate::types::definitions::Definitions;
@@ -299,6 +299,14 @@ pub struct GameObject {
     pub static_definitions: Definitions<StaticDefinition>,
     pub color: Vec<ManaColor>,
     pub printed_ref: Option<PrintedCardRef>,
+    /// Exact token-art lookup metadata, populated only when the engine can
+    /// identify one printed token catalog entry without guessing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_image_ref: Option<TokenImageRef>,
+    /// MTGJSON token UUIDs linked from this printed source card. Display/catalog
+    /// metadata copied from `CardFace`; game rules never read it directly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_related_token_ids: Vec<String>,
 
     // Back face data for double-faced cards (DFCs)
     pub back_face: Option<BackFaceData>,
@@ -747,6 +755,8 @@ impl GameObject {
             static_definitions: Definitions::default(),
             color: Vec::new(),
             printed_ref: None,
+            token_image_ref: None,
+            source_related_token_ids: Vec::new(),
             back_face: None,
             base_power: None,
             base_toughness: None,
