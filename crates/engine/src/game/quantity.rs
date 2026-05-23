@@ -618,20 +618,22 @@ fn divide_rounded(value: i32, divisor: u32, rounding: RoundingMode) -> i32 {
     rounded as i32
 }
 
-/// CR 400.1 + CR 603.4 + CR 109.3: The object IDs an `ObjectCount { filter }`
-/// matches — resolved in the filter's zone (default battlefield) with the
-/// `OtherThanTriggerObject` exclusion applied. Single source of truth: the
-/// `ObjectCount` count is `.len()` of this, and a "for each [object]" loop
-/// (`effects::resolve_chain_body`) iterates these exact ids for per-iteration
-/// `ParentTarget` rebinding — so the count and the iteration members can never
-/// diverge.
+/// CR 400.1: The object IDs an `ObjectCount { filter }` matches — resolved in
+/// the filter's zone (default battlefield) with the `OtherThanTriggerObject`
+/// exclusion applied. Single source of truth: the `ObjectCount` count is `.len()`
+/// of this, and a "for each [object]" loop (`effects::resolve_chain_body`)
+/// iterates these exact ids for per-iteration `ParentTarget` rebinding — so the
+/// count and the iteration members can never diverge.
+///
+/// The `OtherThanTriggerObject` marker excludes the triggering/source object.
+/// This derives from the Oracle word "other"/"other than" — a parser-level
+/// semantic, not a numbered CR.
 ///
 /// The `OtherThanTriggerObject` exclusion drops the trigger id by SET MEMBERSHIP
-/// (`retain`), which is a slight correctness improvement over the prior inline
-/// `saturating_sub(1)`: it only excludes the trigger when it actually appears in
-/// the matched set, so a trigger object that matches the filter predicate but
-/// lies outside the filter's zone is no longer wrongly decremented. This matches
-/// the `Aggregate` arm's zone-membership exclusion.
+/// (`retain`): it only excludes the trigger when it actually appears in the
+/// matched set, so a trigger object that matches the filter predicate but lies
+/// outside the filter's zone is not wrongly decremented. The `Aggregate` resolver
+/// delegates here for its population, so count and aggregate share this exclusion.
 pub(crate) fn object_count_matching_ids(
     state: &GameState,
     filter: &TargetFilter,
@@ -645,13 +647,13 @@ pub(crate) fn object_count_matching_ids(
         .into_iter()
         .filter(|&id| matches_target_filter(state, id, filter, filter_ctx))
         .collect();
-    // CR 603.4 + CR 109.3: drop the triggering object for an "other than" filter
-    // (Valakut's "five other Mountains" — the newly-entered Mountain matches the
-    // per-object filter as a pass-through and is removed here). Falls back to the
-    // ability source when the trigger event carries no object subject (CR 109.3's
-    // general "other than the speaking object"). Resolution-time prefers the live
-    // `current_trigger_event`; detection-time uses the TLS override set by
-    // `resolve_quantity_for_trigger_check`.
+    // Drop the triggering object for an "other than" filter (Valakut's "five
+    // other Mountains" — the newly-entered Mountain matches the per-object filter
+    // as a pass-through and is removed here). The exclusion is the Oracle-text
+    // semantic of "other"/"other than", not a numbered CR. Falls back to the
+    // ability source when the trigger event carries no object subject.
+    // Resolution-time prefers the live `current_trigger_event`; detection-time
+    // uses the TLS override set by `resolve_quantity_for_trigger_check`.
     if filter_contains_other_than_trigger_object(filter) {
         let triggering_id = state
             .current_trigger_event
@@ -904,60 +906,24 @@ fn resolve_ref(
                     .map(|lki| u32_to_i32_saturating(lki.mana_value))
             })
             .unwrap_or(0),
-        // CR 107.3e: Aggregate queries over game objects.
-        // Uses extract_in_zone() to support non-battlefield zones (exile, graveyard, etc.),
-        // same pattern as ObjectCount above.
+        // Aggregate over objects matching `filter` in its zone; id population
+        // delegated to `object_count_matching_ids` (single source of truth for
+        // zone selection + the `OtherThanTriggerObject` exclusion). Selvala-class
+        // "each other creature's power" excludes the triggering object via the
+        // shared helper, so count and aggregate population are identical.
         QuantityRef::Aggregate {
             function,
             property,
             filter,
         } => {
-            let zone = filter
-                .extract_in_zone()
-                .unwrap_or(crate::types::zones::Zone::Battlefield);
-            let zone_ids = crate::game::targeting::zone_object_ids(state, zone);
-            // CR 603.4 + CR 109.3: If the filter carries
-            // `OtherThanTriggerObject`, exclude the triggering object from the
-            // aggregate population (Selvala-class "each other creature's
-            // power"). Mirrors the `ObjectCount` resolver's exclusion path
-            // above: per-object filter evaluation is a transparent
-            // pass-through for the marker; explicit subtraction happens here.
-            //
-            // When no trigger event carries an object subject, the marker
-            // degrades to source-exclusion via the same fallback used by
-            // `ObjectCount` (CR 109.3's general sense of "other").
-            let excluded_id = if filter_contains_other_than_trigger_object(filter) {
-                Some(
-                    state
-                        .current_trigger_event
-                        .as_ref()
-                        .and_then(crate::game::targeting::extract_source_from_event)
-                        .or_else(|| {
-                            detection_trigger_event()
-                                .as_ref()
-                                .and_then(crate::game::targeting::extract_source_from_event)
-                        })
-                        .unwrap_or(source_id),
-                )
-            } else {
-                None
-            };
-            let values = zone_ids.iter().filter_map(|&id| {
-                if excluded_id == Some(id) {
-                    return None;
-                }
-                if matches_target_filter(state, id, filter, &filter_ctx) {
-                    state.objects.get(&id).map(|obj| match property {
-                        ObjectProperty::Power => obj.power.unwrap_or(0),
-                        ObjectProperty::Toughness => obj.toughness.unwrap_or(0),
-                        // CR 202.3e: Use mana_value() which correctly excludes X.
-                        ObjectProperty::ManaValue => {
-                            u32_to_i32_saturating(obj.mana_cost.mana_value())
-                        }
-                    })
-                } else {
-                    None
-                }
+            let ids = object_count_matching_ids(state, filter, &filter_ctx, source_id);
+            let values = ids.iter().filter_map(|&id| {
+                state.objects.get(&id).map(|obj| match property {
+                    ObjectProperty::Power => obj.power.unwrap_or(0),
+                    ObjectProperty::Toughness => obj.toughness.unwrap_or(0),
+                    // CR 202.3e: mana_value() excludes X.
+                    ObjectProperty::ManaValue => u32_to_i32_saturating(obj.mana_cost.mana_value()),
+                })
             });
             match function {
                 AggregateFunction::Max => values.max().unwrap_or(0),
@@ -7036,16 +7002,32 @@ mod tests {
             )),
         });
 
-        let aggregate = QuantityRef::Aggregate {
-            function: AggregateFunction::Max,
-            property: ObjectProperty::Power,
-            filter: TargetFilter::Typed(
+        let other_creatures = || {
+            TargetFilter::Typed(
                 TypedFilter::creature().properties(vec![FilterProp::OtherThanTriggerObject]),
-            ),
+            )
         };
-        let expr = QuantityExpr::Ref { qty: aggregate };
-        // Triggering creature (power 6) must be excluded; max of remaining is 4.
-        assert_eq!(resolve_quantity(&state, &expr, PlayerId(0), source), 4);
+        // Max: triggering creature (power 6) must be excluded; max of remaining is 4.
+        let max_expr = QuantityExpr::Ref {
+            qty: QuantityRef::Aggregate {
+                function: AggregateFunction::Max,
+                property: ObjectProperty::Power,
+                filter: other_creatures(),
+            },
+        };
+        assert_eq!(resolve_quantity(&state, &max_expr, PlayerId(0), source), 4);
+
+        // Sum: the folded `object_count_matching_ids` delegation must keep the
+        // `OtherThanTriggerObject` exclusion — sum is 2 + 4 = 6 (NOT 12 with the
+        // triggering 6/6 included).
+        let sum_expr = QuantityExpr::Ref {
+            qty: QuantityRef::Aggregate {
+                function: AggregateFunction::Sum,
+                property: ObjectProperty::Power,
+                filter: other_creatures(),
+            },
+        };
+        assert_eq!(resolve_quantity(&state, &sum_expr, PlayerId(0), source), 6);
     }
 
     /// Issue #338 — Greater Good end-to-end. Drives the REAL engine pipeline:
