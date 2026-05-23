@@ -5012,6 +5012,10 @@ pub enum Effect {
     /// CR 701.20e + CR 608.2c: Look at top N cards (shown only to the looking player),
     /// select some to keep per the effect's instructions, rest go elsewhere.
     Dig {
+        /// Which player's library is inspected. Defaults to the ability controller
+        /// for "your library"; `Player` covers "target player's library".
+        #[serde(default = "default_target_filter_controller")]
+        player: TargetFilter,
         #[serde(default = "default_quantity_one")]
         count: QuantityExpr,
         /// Kept-card destination override (None = Hand).
@@ -6901,9 +6905,9 @@ impl Effect {
                 }
             }
 
-            Effect::ExileTop { player, .. } | Effect::ExileFromTopUntil { player, .. } => {
-                Some(player)
-            }
+            Effect::Dig { player, .. }
+            | Effect::ExileTop { player, .. }
+            | Effect::ExileFromTopUntil { player, .. } => Some(player),
 
             // CR 111.2 + CR 601.2c: "Target player creates ..." token modes
             // (e.g. Ashling's Command mode 4, Brigid's Command, Prismari Command)
@@ -6940,7 +6944,6 @@ impl Effect {
             | Effect::BounceAll { .. }
             | Effect::CounterAll { .. }
             | Effect::ChangeZoneAll { .. }
-            | Effect::Dig { .. }
             | Effect::PutCounterAll { .. }
             | Effect::DoublePTAll { .. }
             | Effect::Explore

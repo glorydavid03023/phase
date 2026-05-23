@@ -5196,6 +5196,7 @@ mod tests {
             filter,
             rest_destination,
             reveal,
+            ..
         } = &*effect.effect
         else {
             panic!("expected Dig payload, got {:?}", effect.effect);
@@ -10984,8 +10985,24 @@ mod tests {
         // keep_count — pure peek). The parent target is the player whose
         // library we are looking at.
         match &*ability.effect {
-            Effect::Dig { count, reveal, .. } => {
+            Effect::Dig {
+                count,
+                keep_count,
+                player,
+                reveal,
+                ..
+            } => {
                 assert_eq!(count, &QuantityExpr::Fixed { value: 5 }, "look at top 5");
+                assert_eq!(
+                    player,
+                    &TargetFilter::Player,
+                    "target player's library should surface a player target"
+                );
+                assert_eq!(
+                    keep_count,
+                    &Some(0),
+                    "bare look-at instruction should be a pure peek"
+                );
                 assert!(!reveal, "look at (private), not reveal (public)");
             }
             other => panic!(
@@ -11044,6 +11061,7 @@ mod tests {
                 filter,
                 rest_destination,
                 reveal,
+                ..
             } => {
                 assert_eq!(
                     count,

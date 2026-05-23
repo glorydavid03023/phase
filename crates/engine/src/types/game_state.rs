@@ -1483,7 +1483,11 @@ pub enum WaitingFor {
     },
     /// CR 701.20e: Waiting for the player to choose which looked-at cards to keep.
     DigChoice {
+        /// Player who looks at the cards and makes any selection.
         player: PlayerId,
+        /// Player whose library the cards came from.
+        #[serde(default)]
+        library_owner: PlayerId,
         cards: Vec<ObjectId>,
         keep_count: usize,
         /// True = select 0..=keep_count ("up to N"), false = exactly keep_count.
@@ -4899,6 +4903,7 @@ mod tests {
         }));
         variants.push(Box::new(WaitingFor::DigChoice {
             player: PlayerId(0),
+            library_owner: PlayerId(0),
             cards: vec![ObjectId(1)],
             keep_count: 1,
             up_to: false,

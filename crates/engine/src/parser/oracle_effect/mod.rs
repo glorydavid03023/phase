@@ -10015,6 +10015,7 @@ pub(crate) fn each_target_filter_mut(effect: &mut Effect, f: &mut impl FnMut(&mu
         | Effect::Mill { target, .. }
         | Effect::Scry { target, .. }
         | Effect::Surveil { target, .. }
+        | Effect::Dig { player: target, .. }
         | Effect::RevealTop { player: target, .. }
         | Effect::ExileTop { player: target, .. }
         | Effect::Manifest { target, .. }
@@ -12720,27 +12721,23 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
         }
     }
 
-    // CR 701.20a + CR 608.2c: "look at the top card … if it's a [type] …" pure-peek pattern.
-    // A private-Dig (reveal: false, keep_count: None) followed immediately by a def
-    // whose condition is RevealedHasCardType is a conditional peek: the dig is only
-    // there to show the player the card; the sub_ability decides whether to take it.
-    // Mark the Dig as keep_count = 0 so the runtime skips DigChoice interaction and
-    // instead sets last_revealed_ids, letting the condition evaluate correctly.
-    for i in 0..defs.len().saturating_sub(1) {
+    // CR 701.20a + CR 608.2c: A bare private "look at the top N cards" instruction
+    // is only a look; it does not move a chosen card to hand. Continuations that
+    // actually choose cards from among them patch destination/keep_count before this
+    // pass. Anything still in the raw private-Dig shape is a pure peek: skip
+    // DigChoice and only populate last_revealed_ids for downstream conditions.
+    for i in 0..defs.len() {
         if let Effect::Dig {
             reveal: false,
             keep_count: None,
             filter: TargetFilter::Any,
+            destination: None,
+            rest_destination: None,
             ..
         } = &*defs[i].effect
         {
-            if matches!(
-                defs[i + 1].condition,
-                Some(AbilityCondition::RevealedHasCardType { .. })
-            ) {
-                if let Effect::Dig { keep_count, .. } = &mut *defs[i].effect {
-                    *keep_count = Some(0);
-                }
+            if let Effect::Dig { keep_count, .. } = &mut *defs[i].effect {
+                *keep_count = Some(0);
             }
         }
     }
@@ -23317,6 +23314,7 @@ mod tests {
             filter,
             destination,
             rest_destination,
+            ..
         } = &*def.effect
         else {
             panic!("expected Effect::Dig at top level, got {:?}", def.effect);
@@ -23416,6 +23414,7 @@ mod tests {
             destination,
             rest_destination,
             reveal,
+            ..
         } = &*def.effect
         else {
             panic!("expected Effect::Dig at top level, got {:?}", def.effect);

@@ -3581,6 +3581,7 @@ mod tests {
 
     fn make_dig_effect() -> Effect {
         Effect::Dig {
+            player: TargetFilter::Controller,
             count: QuantityExpr::Fixed { value: 3 },
             destination: None,
             keep_count: None,

@@ -1717,6 +1717,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
             filter,
             rest_destination,
             reveal,
+            ..
         } => {
             d.push(("count".into(), fmt_qty(count)));
             if let Some(dest) = destination {

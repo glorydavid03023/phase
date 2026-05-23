@@ -696,6 +696,7 @@ pub(crate) enum SearchCreationImperativeAst {
         count: QuantityExpr,
         /// CR 701.20a vs CR 701.16a: True = revealed (public), false = looked at (private).
         reveal: bool,
+        player: TargetFilter,
     },
     CopyTokenOf {
         target: TargetFilter,

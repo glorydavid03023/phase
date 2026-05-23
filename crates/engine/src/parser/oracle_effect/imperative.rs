@@ -58,6 +58,30 @@ pub(super) fn default_earthbend_target() -> TargetFilter {
     TargetFilter::Typed(TypedFilter::land().controller(ControllerRef::You))
 }
 
+fn parse_dig_library_owner(rest_lower: &str) -> TargetFilter {
+    if preceded(
+        take_until::<_, _, OracleError<'_>>("target player's library"),
+        tag::<_, _, OracleError<'_>>("target player's library"),
+    )
+    .parse(rest_lower)
+    .is_ok()
+    {
+        return TargetFilter::Player;
+    }
+
+    if preceded(
+        take_until::<_, _, OracleError<'_>>("that player's library"),
+        tag::<_, _, OracleError<'_>>("that player's library"),
+    )
+    .parse(rest_lower)
+    .is_ok()
+    {
+        return TargetFilter::ParentTarget;
+    }
+
+    TargetFilter::Controller
+}
+
 /// Shared ControlNextTurn suffix parser (CR 722.1). Called after a prefix
 /// combinator ("you control " or "gain control of ") has matched; parses the
 /// target, then " during that player's next turn", then the optional extra-turn
@@ -1616,7 +1640,11 @@ pub(super) fn parse_search_and_creation_ast(
         } else {
             QuantityExpr::Fixed { value: 1 }
         };
-        return Some(SearchCreationImperativeAst::Dig { count, reveal });
+        return Some(SearchCreationImperativeAst::Dig {
+            count,
+            reveal,
+            player: parse_dig_library_owner(rest_lower),
+        });
     }
     // CR 701.16a: "look at that many cards from the top of your library" — variable-count dig
     // where "that many" references the result of a previous effect (e.g., damage dealt).
@@ -1636,7 +1664,11 @@ pub(super) fn parse_search_and_creation_ast(
         let count = QuantityExpr::Ref {
             qty: QuantityRef::EventContextAmount,
         };
-        return Some(SearchCreationImperativeAst::Dig { count, reveal });
+        return Some(SearchCreationImperativeAst::Dig {
+            count,
+            reveal,
+            player: TargetFilter::Controller,
+        });
     }
     if let Some((_, _)) = nom_on_lower(text, lower, |input| value((), tag("create ")).parse(input))
     {
@@ -1778,7 +1810,12 @@ pub(super) fn lower_search_and_creation_ast(ast: SearchCreationImperativeAst) ->
             reveal,
             destination,
         },
-        SearchCreationImperativeAst::Dig { count, reveal } => Effect::Dig {
+        SearchCreationImperativeAst::Dig {
+            count,
+            reveal,
+            player,
+        } => Effect::Dig {
+            player,
             count,
             destination: None,
             keep_count: None,
