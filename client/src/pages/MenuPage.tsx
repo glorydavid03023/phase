@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 
 import { useAudioContext } from "../audio/useAudioContext";
@@ -14,8 +14,10 @@ import {
 } from "../constants/storage";
 import { isTauri } from "../services/sidecar";
 import { openExternal } from "../services/openExternal";
+import { buildLegalAiDeckCatalog } from "../services/aiDeckCatalog";
 import { loadWsSession } from "../services/multiplayerSession";
 import { loadP2PSession } from "../services/p2pSession";
+import { useCardDataStore } from "../stores/cardDataStore";
 import {
   clearActiveGame,
   loadActiveGame,
@@ -23,6 +25,7 @@ import {
   useGameStore,
 } from "../stores/gameStore";
 import type { ActiveGameMeta } from "../stores/gameStore";
+import { usePreferencesStore } from "../stores/preferencesStore";
 
 interface FormatCoverageSummary {
   total_cards: number;
@@ -50,7 +53,33 @@ export function MenuPage() {
   const [, setActiveDeckName] = useState<string | null>(null);
   const [formatCoverage, setFormatCoverage] = useState<[string, FormatCoverageSummary][]>([]);
   const previewTooltipId = useId();
+  const cardStatus = useCardDataStore((s) => s.status);
+  const lastFormat = usePreferencesStore((s) => s.lastFormat);
+  const lastMatchType = usePreferencesStore((s) => s.lastMatchType);
+  const deckPrewarmStarted = useRef(false);
   useAudioContext("menu");
+
+  // Start warming the shared engine worker's card database immediately so
+  // compat checks and game start are instant by the time the player picks an
+  // action. Idempotent; deck-requiring buttons gate on `cardStatus` below.
+  useEffect(() => {
+    void useCardDataStore.getState().warm();
+  }, []);
+
+  // Once the DB is warm, pre-run summary compatibility for the saved-deck +
+  // AI catalog in the background using the last-used format/match type — the
+  // same keys the setup page evaluates, so its checks become cache hits. This
+  // is the work the gate does NOT block on (per design): the menu un-gates at
+  // DB-ready while these finish moments later. Skipped when no format has been
+  // chosen yet (new users have no decks to pre-check anyway).
+  useEffect(() => {
+    if (cardStatus !== "ready" || !lastFormat || deckPrewarmStarted.current) return;
+    deckPrewarmStarted.current = true;
+    void buildLegalAiDeckCatalog({
+      selectedFormat: lastFormat,
+      selectedMatchType: lastMatchType,
+    }).catch(() => {/* prewarm is best-effort; setup re-runs uncached if needed */});
+  }, [cardStatus, lastFormat, lastMatchType]);
 
   useEffect(() => {
     const savedNames = listSavedDeckNames();
@@ -129,6 +158,11 @@ export function MenuPage() {
   }, [activeGame, navigate]);
 
   const hasSavedGame = activeGame !== null;
+  // Deck-requiring actions wait for the card DB warm. `error` un-gates so a
+  // failed warm never traps the player — downstream init retries best-effort.
+  // Resume and Draft are never gated (Resume awaits the DB itself; Draft uses
+  // its own DraftAdapter and low-difficulty pods need no card data).
+  const cardsPending = cardStatus !== "ready" && cardStatus !== "error";
   const menuActions = useMemo(() => {
     const actions = [];
     if (hasSavedGame) {
@@ -139,6 +173,7 @@ export function MenuPage() {
         accent: "ember" as const,
         onClick: handleResumeGame,
         icon: <ResumeIcon />,
+        disabled: false,
       });
     }
     actions.push(
@@ -149,6 +184,7 @@ export function MenuPage() {
         accent: "arcane" as const,
         onClick: () => navigate("/setup"),
         icon: <SigilIcon />,
+        disabled: cardsPending,
       },
       {
         key: "online",
@@ -157,6 +193,7 @@ export function MenuPage() {
         accent: "jade" as const,
         onClick: () => navigate("/multiplayer"),
         icon: <CrownIcon />,
+        disabled: cardsPending,
       },
     );
     actions.push({
@@ -166,6 +203,7 @@ export function MenuPage() {
       accent: "ember" as const,
       onClick: () => navigate("/draft"),
       icon: <DraftIcon />,
+      disabled: false,
     });
     actions.push(
       {
@@ -175,10 +213,11 @@ export function MenuPage() {
         accent: "stone" as const,
         onClick: () => navigate("/my-decks"),
         icon: <DeckIcon />,
+        disabled: cardsPending,
       },
     );
     return actions;
-  }, [hasSavedGame, navigate, handleResumeGame]);
+  }, [hasSavedGame, navigate, handleResumeGame, cardsPending]);
 
   return (
     <div className="menu-scene relative flex min-h-screen flex-col overflow-hidden">
@@ -331,6 +370,8 @@ export function MenuPage() {
               accent={action.accent}
               onClick={action.onClick}
               icon={action.icon}
+              disabled={action.disabled}
+              statusLabel="Preparing cards…"
             />
           ))}
         </div>
