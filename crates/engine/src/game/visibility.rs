@@ -644,6 +644,57 @@ mod tests {
         );
     }
 
+    /// CR 400.7 + CR 122.2: A card that was publicly revealed in hand (e.g.
+    /// by Duress, Telepathy, Coercion) and is then shuffled back into its
+    /// owner's library becomes a new object. If that card is later drawn
+    /// again, the persistent reveal memory must NOT leak into the new
+    /// hand-zone object — opponents should not retroactively know the
+    /// freshly drawn card's identity. This drives the cleanup in
+    /// `apply_zone_exit_cleanup` (zones.rs) through real `move_to_zone`
+    /// calls, not a shape assertion on the HashSet directly.
+    #[test]
+    fn public_reveal_memory_clears_when_card_changes_zones() {
+        use crate::game::zones::move_to_zone;
+        let mut state = GameState::new_two_player(42);
+        let card_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Duressed Card".to_string(),
+            Zone::Hand,
+        );
+        state.public_revealed_cards.insert(card_id);
+
+        // While in hand, the opponent (PlayerId(0)) sees it by name.
+        let filtered = filter_state_for_viewer(&state, PlayerId(0));
+        assert_eq!(
+            filtered.objects.get(&card_id).map(|obj| obj.name.as_str()),
+            Some("Duressed Card"),
+            "reveal memory should show the card while it is in hand"
+        );
+
+        // Hand → Library: the reveal memory must be dropped at the zone
+        // boundary. The library-zone gate in `is_visible_revealed_card`
+        // would otherwise hide it incidentally — we check the underlying
+        // set so the test would have caught the original bug.
+        let mut events = Vec::new();
+        move_to_zone(&mut state, card_id, Zone::Library, &mut events);
+        assert!(
+            !state.public_revealed_cards.contains(&card_id),
+            "public_revealed_cards must be cleared on zone change (CR 400.7)"
+        );
+
+        // Library → Hand (draw the same storage id back). Without the fix,
+        // the persistent flag would resurface visibility for the opponent.
+        move_to_zone(&mut state, card_id, Zone::Hand, &mut events);
+        let filtered = filter_state_for_viewer(&state, PlayerId(0));
+        assert_eq!(
+            filtered.objects.get(&card_id).map(|obj| obj.name.as_str()),
+            Some("Hidden Card"),
+            "re-drawn card must not inherit prior reveal state — it is a new object per CR 400.7"
+        );
+    }
+
     #[test]
     fn filtered_state_hides_pending_begin_game_queue() {
         let mut state = GameState::new_two_player(42);
