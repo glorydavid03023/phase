@@ -10292,6 +10292,9 @@ fn contains_explicit_tracked_set_pronoun(lower: &str) -> bool {
 ///     branch is what unlocks Necropotence's "Pay 1 life: Exile the top card
 ///     of your library face down. Put that card into your hand at the
 ///     beginning of your next end step." pattern (~16 cards).
+///   * "create a token that's a copy of that card" — the Sin, Spira's
+///     Punishment class where the copy source is the card just exiled by the
+///     previous instruction, not the trigger source.
 fn contains_implicit_tracked_set_pronoun(lower: &str) -> bool {
     // Battlefield recall — "return it/them ... battlefield". Start-anchored
     // because cross-clause anaphors begin the recall clause.
@@ -10319,7 +10322,15 @@ fn contains_implicit_tracked_set_pronoun(lower: &str) -> bool {
         .parse(lower)
         .is_ok();
 
-    battlefield_recall || hand_recall
+    let copy_token_recall = (
+        take_until::<_, _, OracleError<'_>>("copy of "),
+        tag("copy of "),
+        tag("that card"),
+    )
+        .parse(lower)
+        .is_ok();
+
+    battlefield_recall || hand_recall || copy_token_recall
 }
 
 fn mark_uses_tracked_set(def: &mut AbilityDefinition) {
@@ -10365,6 +10376,7 @@ fn rewrite_parent_targets_to_tracked_set(effect: &mut Effect) {
         | Effect::Connive { target, .. }
         | Effect::PhaseOut { target }
         | Effect::ForceBlock { target }
+        | Effect::CopyTokenOf { target, .. }
         | Effect::PutCounter { target, .. }
         | Effect::AddCounter { target, .. }
         | Effect::RemoveCounter { target, .. }
@@ -26715,6 +26727,38 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn random_exile_then_copy_that_card_uses_tracked_set() {
+        let def = parse_effect_chain(
+            "Exile a permanent card from your graveyard at random, then create a tapped token that's a copy of that card.",
+            AbilityKind::Spell,
+        );
+
+        let Effect::ChangeZone {
+            origin,
+            destination,
+            ..
+        } = def.effect.as_ref()
+        else {
+            panic!("expected ChangeZone, got {:?}", def.effect);
+        };
+        assert_eq!(*origin, Some(Zone::Graveyard));
+        assert_eq!(*destination, Zone::Exile);
+        assert_eq!(def.target_selection_mode, TargetSelectionMode::Random);
+
+        let copy = def.sub_ability.as_deref().expect("copy sub-ability");
+        let Effect::CopyTokenOf { target, tapped, .. } = copy.effect.as_ref() else {
+            panic!("expected CopyTokenOf, got {:?}", copy.effect);
+        };
+        assert_eq!(
+            *target,
+            TargetFilter::TrackedSet {
+                id: TrackedSetId(0)
+            }
+        );
+        assert!(*tapped);
     }
 
     /// CR 701.17a + CR 701.17c + CR 400.7j + CR 608.2c: "Mill a card, then draw
