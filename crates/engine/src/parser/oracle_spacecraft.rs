@@ -320,6 +320,32 @@ mod tests {
     }
 
     #[test]
+    fn trigger_threshold_counter_rider_targets_this_spacecraft() {
+        let lines = [
+            "3+ | Whenever you cast an artifact spell, draw a card. Put a charge counter on this Spacecraft.",
+        ];
+        let (_, triggers, _, consumed) =
+            parse_spacecraft_threshold_lines(&lines, "Uthros Research Craft", 0);
+        assert_eq!(consumed, vec![0]);
+        assert_eq!(triggers.len(), 1);
+        let counter = triggers[0]
+            .execute
+            .as_ref()
+            .expect("threshold trigger should have an execute ability")
+            .sub_ability
+            .as_ref()
+            .expect("draw trigger should chain into counter rider");
+        assert!(matches!(
+            counter.effect.as_ref(),
+            crate::types::ability::Effect::PutCounter {
+                counter_type: CounterType::Generic(name),
+                target: TargetFilter::SelfRef,
+                ..
+            } if name == STATION_COUNTER
+        ));
+    }
+
+    #[test]
     fn activated_threshold_line_gets_counter_threshold_restriction() {
         let lines = ["1+ | {T}: Draw a card."];
         let (_, _, abilities, consumed) = parse_spacecraft_threshold_lines(&lines, "Test", 0);
