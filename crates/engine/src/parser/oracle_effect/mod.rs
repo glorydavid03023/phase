@@ -17141,7 +17141,15 @@ fn parse_dynamic_counter_suffix_body(
     Ok(("", (counter_type, QuantityExpr::Ref { qty })))
 }
 
+#[cfg(test)]
 fn try_parse_put_zone_change(lower: &str, text: &str) -> Option<Effect> {
+    try_parse_put_zone_change_parts(lower, text).map(|(effect, _)| effect)
+}
+
+fn try_parse_put_zone_change_parts(
+    lower: &str,
+    text: &str,
+) -> Option<(Effect, Option<MultiTargetSpec>)> {
     let tp = TextPair::new(text, lower);
     let (_, after_put_tp) = tp.split_at(4);
 
@@ -17188,7 +17196,8 @@ fn try_parse_put_zone_change(lower: &str, text: &str) -> Option<Effect> {
                 Some(prefix_len) => before.original[..prefix_len].trim(),
                 None => target_text,
             };
-            let up_to = parse_up_to_one_target_prefix(before.lower);
+            let (target_text, choice_count) = strip_put_resolution_choice_quantifier(target_text);
+            let up_to = parse_up_to_one_target_prefix(before.lower) || choice_count.is_some();
             let (target, _) = parse_target(target_text);
             // CR 202.3 + CR 107.3i: A trailing "where X is <expression>"
             // defining clause (Birthing Ritual: "...with mana value X or less
@@ -17258,22 +17267,58 @@ fn try_parse_put_zone_change(lower: &str, text: &str) -> Option<Effect> {
             };
             let enter_transformed = destination == Zone::Battlefield
                 && parse_battlefield_transformed_qualifier(after.lower);
-            return Some(Effect::ChangeZone {
-                origin: infer_origin_zone(after_put_tp.lower),
-                destination,
-                target,
-                owner_library: false,
-                enter_transformed,
-                under_your_control,
-                enter_tapped,
-                enters_attacking,
-                up_to,
-                enter_with_counters,
-            });
+            return Some((
+                Effect::ChangeZone {
+                    origin: infer_origin_zone(after_put_tp.lower),
+                    destination,
+                    target,
+                    owner_library: false,
+                    enter_transformed,
+                    under_your_control,
+                    enter_tapped,
+                    enters_attacking,
+                    up_to,
+                    enter_with_counters,
+                },
+                choice_count,
+            ));
         }
     }
 
     None
+}
+
+fn strip_put_resolution_choice_quantifier(target_text: &str) -> (&str, Option<MultiTargetSpec>) {
+    let lower = target_text.to_ascii_lowercase();
+    let target_starts_with_target = |text: &str| {
+        alt((
+            tag::<_, _, OracleError<'_>>("target "),
+            tag("other target "),
+            tag("another target "),
+        ))
+        .parse(text.trim_start())
+        .is_ok()
+    };
+
+    if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("any number of ").parse(lower.as_str()) {
+        let consumed = lower.len() - rest.len();
+        let stripped = target_text[consumed..].trim_start();
+        if !target_starts_with_target(&stripped.to_ascii_lowercase()) {
+            return (stripped, Some(MultiTargetSpec::unlimited(0)));
+        }
+    }
+
+    if let Ok((after_up_to, _)) = tag::<_, _, OracleError<'_>>("up to ").parse(lower.as_str()) {
+        if let Ok((remainder, max)) = parse_multi_target_count_expr(after_up_to) {
+            let consumed = lower.len() - remainder.len();
+            let stripped = target_text[consumed..].trim_start();
+            if !target_starts_with_target(&stripped.to_ascii_lowercase()) {
+                return (stripped, Some(MultiTargetSpec::up_to(max)));
+            }
+        }
+    }
+
+    (target_text, None)
 }
 
 fn parse_up_to_one_target_prefix(input: &str) -> bool {
@@ -37013,6 +37058,33 @@ mod tests {
             }
             other => panic!("expected ChangeZone, got {other:?}"),
         }
+    }
+
+    /// CR 107.1c + CR 608.2c — Ghalta, Stampede Tyrant class:
+    /// "put any number of creature cards from your hand onto the battlefield"
+    /// is a non-targeted resolution-time choice over 0..=all eligible cards,
+    /// not a single-card `ChangeZone` prompt.
+    #[test]
+    fn put_zone_change_any_number_from_hand_sets_resolution_choice_count() {
+        let def = parse_effect_chain(
+            "Put any number of creature cards from your hand onto the battlefield.",
+            AbilityKind::Spell,
+        );
+
+        assert!(matches!(&*def.effect, Effect::ChangeZone { .. }));
+        assert_eq!(def.target_choice_timing, TargetChoiceTiming::Resolution);
+        assert_eq!(def.multi_target, Some(MultiTargetSpec::unlimited(0)));
+
+        let Effect::ChangeZone { target, up_to, .. } = &*def.effect else {
+            unreachable!("asserted ChangeZone above");
+        };
+        assert!(*up_to, "\"any number\" includes zero");
+        let TargetFilter::Typed(TypedFilter { properties, .. }) = target else {
+            panic!("expected typed hand filter, got {target:?}");
+        };
+        assert!(properties
+            .iter()
+            .any(|prop| matches!(prop, FilterProp::InZone { zone: Zone::Hand })));
     }
 
     /// CR 508.4 + CR 614.1 — Kaalia of the Vast: "put X from your hand onto
