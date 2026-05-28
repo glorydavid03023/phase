@@ -10,7 +10,8 @@
       "Easy": "Fácil",
       "Medium": "Médio",
       "Hard": "Difícil",
-      "VeryHard": "Muito difícil"
+      "VeryHard": "Muito difícil",
+      "CEDH": "cEDH"
     }
   },
   "bracketFilter": {
@@ -95,6 +96,11 @@
     "difficulty": "Dificuldade",
     "deckRandom": "Aleatório",
     "deckRandomCount": "Aleatório ({{count}})",
+    "cedhToggle": {
+      "label": "Modo cEDH",
+      "hint": "Todos os oponentes jogam cEDH. Cada deck deve ser bracket 5.",
+      "badge": "cEDH"
+    },
     "source": {
       "feed": "Feed",
       "user": "Usuário",
