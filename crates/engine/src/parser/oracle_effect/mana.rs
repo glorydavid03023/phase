@@ -1270,8 +1270,11 @@ fn parse_mana_value_threshold(rest: &str) -> Option<(Comparator, u32)> {
     })?;
     // parse_number consumes the leading integer N (returns u32).
     let after_prefix_lower = after_prefix.to_lowercase();
-    let (value_n, after_num) =
-        nom_on_lower(after_prefix, &after_prefix_lower, nom_primitives::parse_number)?;
+    let (value_n, after_num) = nom_on_lower(
+        after_prefix,
+        &after_prefix_lower,
+        nom_primitives::parse_number,
+    )?;
     let after_num = after_num.trim();
     let after_num_lower = after_num.to_lowercase();
     // Threshold suffix → comparator. Empty/all-consumed remainder = exact (EQ).

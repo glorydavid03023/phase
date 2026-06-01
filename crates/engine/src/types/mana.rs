@@ -372,10 +372,9 @@ impl ManaRestriction {
             // mana-value check in game::casting
             // (`comparator.evaluate(obj.mana_cost.mana_value() as i32, value)`).
             // A spell with no known mana value (None) is not eligible.
-            ManaRestriction::OnlyForSpellWithManaValue { comparator, value } => {
-                meta.mana_value
-                    .is_some_and(|mv| comparator.evaluate(mv as i32, *value as i32))
-            }
+            ManaRestriction::OnlyForSpellWithManaValue { comparator, value } => meta
+                .mana_value
+                .is_some_and(|mv| comparator.evaluate(mv as i32, *value as i32)),
             ManaRestriction::ConvokePayment => true,
         }
     }
