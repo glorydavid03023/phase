@@ -769,17 +769,14 @@ fn destroy_applier(
     //      (Hurr Jackal, Furnace Brood, Lim-Dûl's Cohort).
     // In both cases the shield is left unconsumed (CR 701.19c: shields are not
     // applied, not destroyed) and destruction proceeds.
-    let target_cant_regenerate = matches!(
-        &event,
+    let target_cant_regenerate = match &event {
         ProposedEvent::Destroy {
-            cant_regenerate: true,
+            object_id,
+            cant_regenerate,
             ..
-        }
-    ) || matches!(
-        &event,
-        ProposedEvent::Destroy { object_id, .. }
-            if object_has_active_cant_be_regenerated(state, *object_id)
-    );
+        } => *cant_regenerate || object_has_active_cant_be_regenerated(state, *object_id),
+        _ => false,
+    };
     if target_cant_regenerate {
         return ApplyResult::Modified(event);
     }
