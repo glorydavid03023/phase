@@ -15,6 +15,7 @@ use crate::types::ability::{
 };
 use crate::types::keywords::KeywordKind;
 use crate::types::mana::{ManaColor, ManaRestriction, ManaSpellGrant};
+use crate::types::zones::Zone;
 
 use super::super::oracle_keyword::parse_keyword_from_oracle;
 use super::super::oracle_quantity::{parse_cda_quantity, parse_event_context_quantity};
@@ -1267,8 +1268,7 @@ pub(crate) fn parse_mana_spend_restriction(
 /// graveyard / exile / hand with the usual "your"/"a" determiners. Returns
 /// `None` when the remainder is not a bare spell-from-zone phrase (e.g. it
 /// carries a keyword or type qualifier handled by other arms).
-fn parse_spell_from_zone(rest: &str) -> Option<crate::types::zones::Zone> {
-    use crate::types::zones::Zone;
+fn parse_spell_from_zone(rest: &str) -> Option<Zone> {
     let rest_lower = rest.to_lowercase();
     let (_, after_prefix) = nom_on_lower(rest, &rest_lower, |i| {
         value(

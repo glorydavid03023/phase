@@ -11207,31 +11207,30 @@ mod tests {
 
     #[test]
     fn mana_spend_restriction_from_graveyard() {
-        use crate::parser::oracle_effect::mana::parse_mana_spend_restriction;
-        use crate::types::ability::ManaSpendRestriction;
-        use crate::types::zones::Zone;
         assert_eq!(
-            parse_mana_spend_restriction(
+            crate::parser::oracle_effect::mana::parse_mana_spend_restriction(
                 "spend this mana only to cast a spell from your graveyard"
             )
             .map(|(r, _)| r),
             Some(ManaSpendRestriction::SpellFromZone(Zone::Graveyard))
         );
         assert_eq!(
-            parse_mana_spend_restriction("spend this mana only to cast spells from exile")
-                .map(|(r, _)| r),
+            crate::parser::oracle_effect::mana::parse_mana_spend_restriction(
+                "spend this mana only to cast spells from exile"
+            )
+            .map(|(r, _)| r),
             Some(ManaSpendRestriction::SpellFromZone(Zone::Exile))
         );
     }
 
     #[test]
     fn mana_spend_restriction_on_costs_that_contain_x() {
-        use crate::parser::oracle_effect::mana::parse_mana_spend_restriction;
-        use crate::types::ability::ManaSpendRestriction;
         // "contain" is an alias for the existing "include" X-cost wording.
         assert_eq!(
-            parse_mana_spend_restriction("spend this mana only on costs that contain {x}")
-                .map(|(r, _)| r),
+            crate::parser::oracle_effect::mana::parse_mana_spend_restriction(
+                "spend this mana only on costs that contain {x}"
+            )
+            .map(|(r, _)| r),
             Some(ManaSpendRestriction::XCostOnly)
         );
     }

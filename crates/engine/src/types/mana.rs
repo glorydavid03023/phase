@@ -7,6 +7,7 @@ use super::events::GameEvent;
 use super::identifiers::ObjectId;
 use super::keywords::{Keyword, KeywordKind};
 use super::player::PlayerId;
+use super::zones::Zone;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ManaColor {
@@ -306,7 +307,7 @@ pub enum ManaRestriction {
     /// graveyard" / "from exile". Gates on the spell's cast-from zone, consulting
     /// `SpellMeta.cast_from_zone`. A distinct axis from
     /// `OnlyForSpellWithKeywordKindFromZone` (which also requires a keyword).
-    OnlyForSpellFromZone(crate::types::zones::Zone),
+    OnlyForSpellFromZone(Zone),
     /// CR 702.51a: Internal marker for a convoke tap that substitutes for
     /// paying mana. The payment algorithm may consume it for the current spell,
     /// but cast-spent metrics and mana-added triggers must ignore it.
@@ -1755,7 +1756,6 @@ mod tests {
     // and the restriction never permits ability activation.
     #[test]
     fn restriction_allows_spell_from_zone() {
-        use crate::types::zones::Zone;
         let restriction = ManaRestriction::OnlyForSpellFromZone(Zone::Graveyard);
         let from_gy = SpellMeta {
             cast_from_zone: Some(Zone::Graveyard),
