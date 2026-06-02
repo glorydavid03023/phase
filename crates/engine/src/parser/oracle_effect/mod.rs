@@ -25855,9 +25855,10 @@ mod tests {
                     sd.mode
                 );
                 assert!(
-                    sd.modifications.contains(&ContinuousModification::AddStaticMode {
-                        mode: sd.mode.clone()
-                    }),
+                    sd.modifications
+                        .contains(&ContinuousModification::AddStaticMode {
+                            mode: sd.mode.clone()
+                        }),
                     "expected AddStaticMode modification, got {:?}",
                     sd.modifications
                 );
