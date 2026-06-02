@@ -12516,3 +12516,91 @@ fn static_line_lovisa_coldeyes() {
     assert!(matches!(def.mode, StaticMode::Continuous));
     assert_eq!(def.modifications.len(), 3);
 }
+
+/// CR 614.1c + CR 122.1: Kalain, Reclusive Painter — "Other creatures you
+/// control enter with an additional +1/+1 counter on them." parses to the
+/// fixed-count `EntersWithAdditionalCounters` static with an Other + you-control
+/// creature affected filter.
+#[test]
+fn enters_with_additional_counter_other_creatures() {
+    use crate::types::counter::CounterType;
+    let def = parse_static_line(
+        "Other creatures you control enter with an additional +1/+1 counter on them.",
+    )
+    .expect("should parse the Kalain enters-with-counter line");
+    assert_eq!(
+        def.mode,
+        StaticMode::EntersWithAdditionalCounters {
+            counter_type: CounterType::Plus1Plus1,
+            count: 1,
+        }
+    );
+    match &def.affected {
+        Some(TargetFilter::Typed(tf)) => {
+            assert_eq!(tf.controller, Some(ControllerRef::You));
+            assert!(
+                tf.type_filters.contains(&TypeFilter::Creature),
+                "affected must be creatures, got {:?}",
+                tf.type_filters
+            );
+            assert!(
+                tf.properties.contains(&FilterProp::Another),
+                "\"Other\" must add FilterProp::Another, got {:?}",
+                tf.properties
+            );
+        }
+        other => panic!("affected must be Typed(other creatures you control), got {other:?}"),
+    }
+}
+
+/// CR 614.1c + CR 205.4a: Bard Class — "Legendary creatures you control enter
+/// with an additional +1/+1 counter on them." parses with a Legendary supertype
+/// qualifier on the affected filter (no "Other" exclusion).
+#[test]
+fn enters_with_additional_counter_legendary_creatures() {
+    use crate::types::counter::CounterType;
+    let def = parse_static_line(
+        "Legendary creatures you control enter with an additional +1/+1 counter on them.",
+    )
+    .expect("should parse the Bard Class enters-with-counter line");
+    assert_eq!(
+        def.mode,
+        StaticMode::EntersWithAdditionalCounters {
+            counter_type: CounterType::Plus1Plus1,
+            count: 1,
+        }
+    );
+    match &def.affected {
+        Some(TargetFilter::Typed(tf)) => {
+            assert_eq!(tf.controller, Some(ControllerRef::You));
+            assert!(
+                tf.type_filters.contains(&TypeFilter::Creature),
+                "affected must be creatures, got {:?}",
+                tf.type_filters
+            );
+            assert!(
+                !tf.properties.contains(&FilterProp::Another),
+                "non-\"Other\" subject must NOT carry FilterProp::Another, got {:?}",
+                tf.properties
+            );
+        }
+        other => panic!("affected must be Typed(legendary creatures you control), got {other:?}"),
+    }
+}
+
+/// CR 122.1: A dynamic-count "enters with" line (Gev-class, "for each opponent
+/// who lost life") has no fixed counter token and must NOT match the fixed-count
+/// parser — it stays Unimplemented rather than silently parsing as count 1.
+#[test]
+fn enters_with_dynamic_count_not_matched_as_fixed() {
+    let def = parse_static_line(
+        "Other creatures you control enter with an additional +1/+1 counter on them for each opponent who lost life this turn.",
+    );
+    if let Some(def) = def {
+        assert!(
+            !matches!(def.mode, StaticMode::EntersWithAdditionalCounters { .. }),
+            "dynamic-count line must not lower to the fixed-count EntersWithAdditionalCounters, got {:?}",
+            def.mode
+        );
+    }
+}
