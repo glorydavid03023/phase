@@ -19007,6 +19007,11 @@ mod tests {
                 3,
                 -1,
             ),
+            (
+                "~ gets +2/-2 until end of turn and can attack this turn as though they didn't have defender",
+                2,
+                -2,
+            ),
         ] {
             let def = parse_effect_chain(text, AbilityKind::Activated);
 

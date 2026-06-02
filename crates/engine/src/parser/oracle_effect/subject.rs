@@ -442,7 +442,7 @@ fn try_parse_subject_restriction_clause(
     build_restriction_clause(application, predicate)
 }
 
-/// CR 702.3b: "[subject] can attack [this turn] as though it didn't have defender"
+/// CR 702.3b: "[subject] can attack [this turn] as though it/they didn't have defender"
 /// Produces a GenericEffect with CanAttackWithDefender static mode.
 fn try_parse_can_attack_with_defender(
     text: &str,
@@ -451,7 +451,7 @@ fn try_parse_can_attack_with_defender(
     let lower = text.to_lowercase();
     let tp = TextPair::new(text, &lower);
     let pos = tp.find(" can attack")?;
-    if !lower.contains("as though it didn't have defender") {
+    if !is_can_attack_despite_defender_predicate(&lower[pos + 1..]) {
         return None;
     }
     let subject = text[..pos].trim();
