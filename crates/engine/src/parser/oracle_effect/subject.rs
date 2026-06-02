@@ -2132,16 +2132,17 @@ fn try_parse_set_life_total(
     become_text: &str,
     application: &SubjectApplication,
 ) -> Option<ParsedEffectClause> {
-    let lower = become_text.to_lowercase();
+    let full_lower = become_text.to_lowercase();
     // CR 119.5: "life total becomes equal to <quantity>" — strip the optional
-    // "equal to" connector so the quantity parser below sees the bare quantity
-    // ("equal to your starting life total" → "your starting life total";
-    // Oketra's Last Mercy, Resolute Archangel). Forms without the connector
-    // ("becomes half your starting life total", "becomes 10") are unaffected.
-    let lower = lower
-        .strip_prefix("equal to ")
-        .map(str::to_string)
-        .unwrap_or(lower);
+    // "equal to" connector via a nom combinator so the quantity parser below
+    // sees the bare quantity ("equal to your starting life total" → "your
+    // starting life total"; Oketra's Last Mercy, Resolute Archangel). Forms
+    // without the connector ("becomes half ...", "becomes 10") pass through
+    // unchanged because `opt` never fails.
+    let lower = opt(tag::<_, _, OracleError<'_>>("equal to "))
+        .parse(full_lower.as_str())
+        .map_or(full_lower.as_str(), |(rest, _)| rest)
+        .to_string();
 
     let amount = if nom_primitives::scan_contains(&lower, "starting life total") {
         let amount_text = lower.trim().trim_end_matches('.');
