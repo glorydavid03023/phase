@@ -27339,6 +27339,45 @@ mod tests {
         assert!(*tapped);
     }
 
+    /// CR 205.3 + CR 700.1: "Choose a creature type other than Wall. Target
+    /// creature becomes that type until end of turn." (Imagecrafter, Unnatural
+    /// Selection, Mistform Mutant, Standardize). "becomes that type" applies the
+    /// chosen creature type via a continuous `AddChosenSubtype(CreatureType)` —
+    /// not an Unimplemented fallback or a mis-tokenized "That"/"Type" subtype.
+    #[test]
+    fn becomes_that_type_applies_chosen_creature_type() {
+        use crate::types::ability::{ChosenSubtypeKind, ContinuousModification};
+        let def = parse_effect_chain(
+            "Choose a creature type other than Wall. Target creature becomes that type until end of turn.",
+            AbilityKind::Activated,
+        );
+        let mut found = false;
+        let mut node = Some(&def);
+        while let Some(d) = node {
+            if let Effect::GenericEffect {
+                static_abilities, ..
+            } = &*d.effect
+            {
+                for sd in static_abilities {
+                    if sd
+                        .modifications
+                        .contains(&ContinuousModification::AddChosenSubtype {
+                            kind: ChosenSubtypeKind::CreatureType,
+                        })
+                    {
+                        found = true;
+                    }
+                }
+            }
+            node = d.sub_ability.as_deref();
+        }
+        assert!(
+            found,
+            "expected AddChosenSubtype(CreatureType) in the chain; got: {:?}",
+            def.effect
+        );
+    }
+
     /// CR 105.2 + CR 205.1a + CR 613.1d-e: Rise from the Grave reanimation —
     /// "Put target creature card from a graveyard onto the battlefield under your
     /// control. It's a black Zombie in addition to its other colors and types."

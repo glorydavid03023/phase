@@ -1892,6 +1892,38 @@ fn build_become_clause(
         return Some(clause);
     }
 
+    // CR 205.3 + CR 700.1: "becomes that type" — applies the creature type chosen
+    // by a preceding "Choose a creature type" instruction in the same ability
+    // (Imagecrafter, Unnatural Selection, Mistform Mutant, Standardize). Unlike
+    // the "of your choice" arm above, the choice is already made upstream, so this
+    // emits only the apply half — a continuous `AddChosenSubtype` that reads the
+    // source's chosen creature type at resolution. Must intercept before
+    // parse_animation_spec, which would mis-tokenize "that"/"type" as subtypes.
+    if become_text.eq_ignore_ascii_case("that type") {
+        use crate::types::ability::{ChosenSubtypeKind, ContinuousModification};
+        let affected = static_affected_for_application(&application);
+        let effect = Effect::GenericEffect {
+            static_abilities: vec![StaticDefinition::continuous()
+                .affected(affected)
+                .modifications(vec![ContinuousModification::AddChosenSubtype {
+                    kind: ChosenSubtypeKind::CreatureType,
+                }])
+                .description(become_text.to_string())],
+            duration: duration.clone(),
+            target: application.target.clone(),
+        };
+        return Some(ParsedEffectClause {
+            effect,
+            duration,
+            sub_ability: None,
+            distribute: None,
+            multi_target: None,
+            condition: None,
+            optional: false,
+            unless_pay: None,
+        });
+    }
+
     // CR 702.xxx: Prepare (Strixhaven) — "becomes prepared" / "becomes
     // unprepared" toggles the PreparedState on the target creature. Must
     // intercept before parse_animation_spec which would try to classify
