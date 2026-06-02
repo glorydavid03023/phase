@@ -1838,6 +1838,63 @@ mod tests {
         assert!(!restriction.allows_spell(&one_color));
     }
 
+    // CR 105.2 + CR 106.6: range comparators share the same color-count gate as
+    // exact matching.
+    #[test]
+    fn restriction_allows_spell_with_color_count_ranges() {
+        let two_or_more = ManaRestriction::OnlyForSpellWithColorCount {
+            comparator: Comparator::GE,
+            count: 2,
+        };
+        let two_or_fewer = ManaRestriction::OnlyForSpellWithColorCount {
+            comparator: Comparator::LE,
+            count: 2,
+        };
+        let three_colors = SpellMeta {
+            color_count: Some(3),
+            ..SpellMeta::default()
+        };
+        let one_color = SpellMeta {
+            color_count: Some(1),
+            ..SpellMeta::default()
+        };
+        assert!(two_or_more.allows_spell(&three_colors));
+        assert!(!two_or_more.allows_spell(&one_color));
+        assert!(two_or_fewer.allows_spell(&one_color));
+        assert!(!two_or_fewer.allows_spell(&three_colors));
+    }
+
+    #[test]
+    fn spend_for_enforces_color_count_restriction() {
+        let mut pool = ManaPool::default();
+        pool.add(make_restricted_unit(
+            ManaType::Green,
+            ObjectId(1),
+            vec![ManaRestriction::OnlyForSpellWithColorCount {
+                comparator: Comparator::GE,
+                count: 2,
+            }],
+        ));
+
+        let one_color = SpellMeta {
+            color_count: Some(1),
+            ..SpellMeta::default()
+        };
+        assert!(pool
+            .spend_for(ManaType::Green, &PaymentContext::Spell(&one_color))
+            .is_none());
+        assert_eq!(pool.total(), 1);
+
+        let two_colors = SpellMeta {
+            color_count: Some(2),
+            ..SpellMeta::default()
+        };
+        assert!(pool
+            .spend_for(ManaType::Green, &PaymentContext::Spell(&two_colors))
+            .is_some());
+        assert_eq!(pool.total(), 0);
+    }
+
     // CR 106.6 + CR 400.7: zone-gated spend allows only spells cast from the
     // named zone; a different zone or an unknown (None) origin is ineligible,
     // and the restriction never permits ability activation.

@@ -1354,9 +1354,9 @@ fn parse_mana_value_threshold(rest: &str) -> Option<(Comparator, u32)> {
 }
 
 /// CR 105.2 + CR 106.6: Parse the "[spells|a spell] with [exactly] N [or more|or
-/// fewer] colors" tail of a spend restriction into a `(Comparator, count)`.
-/// "exactly N colors" and bare "N colors" read as exact (`EQ`); "or more / or
-/// greater colors" reads as `GE`; "or fewer / or less colors" reads as `LE`.
+/// fewer] color(s)" tail of a spend restriction into a `(Comparator, count)`.
+/// "exactly N color(s)" and bare "N color(s)" read as exact (`EQ`); "or more /
+/// or greater color(s)" reads as `GE`; "or fewer / or less color(s)" reads as `LE`.
 /// Colorless spells have a color count of 0, so `count` may be 0.
 ///
 /// This file's `nom_on_lower` returns `(value, remainder)`, so the consumed
@@ -1381,11 +1381,10 @@ fn parse_color_count(rest: &str) -> Option<(Comparator, u32)> {
     )?;
     let after_num = after_num.trim();
     let after_num_lower = after_num.to_lowercase();
-    // Suffix → comparator. Bare "colors" or "exactly N colors" = exact (EQ).
+    // Suffix -> comparator. Bare "color(s)" or "exactly N color(s)" = exact (EQ).
     let comparator = if exactly {
-        // "exactly N colors": require the bare "colors" tail, no threshold word.
         if nom_on_lower(after_num, &after_num_lower, |i| {
-            all_consuming(value((), tag("colors"))).parse(i)
+            all_consuming(parse_color_word).parse(i)
         })
         .is_some()
         {
@@ -1394,15 +1393,15 @@ fn parse_color_count(rest: &str) -> Option<(Comparator, u32)> {
             return None;
         }
     } else if nom_on_lower(after_num, &after_num_lower, |i| {
-        all_consuming(value((), tag("colors"))).parse(i)
+        all_consuming(parse_color_word).parse(i)
     })
     .is_some()
     {
         Comparator::EQ
     } else if nom_on_lower(after_num, &after_num_lower, |i| {
         all_consuming(alt((
-            value((), tag("or more colors")),
-            value((), tag("or greater colors")),
+            value((), (tag("or more "), parse_color_word)),
+            value((), (tag("or greater "), parse_color_word)),
         )))
         .parse(i)
     })
@@ -1411,8 +1410,8 @@ fn parse_color_count(rest: &str) -> Option<(Comparator, u32)> {
         Comparator::GE
     } else if nom_on_lower(after_num, &after_num_lower, |i| {
         all_consuming(alt((
-            value((), tag("or fewer colors")),
-            value((), tag("or less colors")),
+            value((), (tag("or fewer "), parse_color_word)),
+            value((), (tag("or less "), parse_color_word)),
         )))
         .parse(i)
     })
@@ -1423,6 +1422,10 @@ fn parse_color_count(rest: &str) -> Option<(Comparator, u32)> {
         return None;
     };
     Some((comparator, count))
+}
+
+fn parse_color_word(input: &str) -> OracleResult<'_, ()> {
+    value((), (tag("color"), opt(tag("s")))).parse(input)
 }
 
 /// CR 106.6: Parse a standalone "that spell can't be countered" clause.

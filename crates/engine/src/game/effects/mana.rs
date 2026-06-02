@@ -289,6 +289,8 @@ pub(crate) fn resolve_restrictions(
                     value: *value,
                 })
             }
+            // CR 105.2 + CR 106.6: Lower color-count spend restrictions into the
+            // runtime gate checked against `SpellMeta.color_count`.
             ManaSpendRestriction::SpellWithColorCount { comparator, count } => {
                 Some(ManaRestriction::OnlyForSpellWithColorCount {
                     comparator: *comparator,
