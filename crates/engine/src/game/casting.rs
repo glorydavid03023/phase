@@ -12644,7 +12644,6 @@ mod tests {
     ///   reads it via `QuantityRef::PreviousEffectAmount`.
     #[test]
     fn exsanguinate_oracle_text_drains_each_opponent_and_gains_controller() {
-        use super::super::engine::apply_as_current;
         use crate::types::ability::{AbilityKind, PlayerFilter, QuantityRef};
         use crate::types::zones::Zone;
 
@@ -12700,6 +12699,9 @@ mod tests {
         }
 
         // --- Runtime contract (2-player) ------------------------------------
+        // Driven through the canonical `GameRunner::cast` pipeline so the
+        // drain/gain life deltas are read from `CastOutcome` rather than
+        // hand-picked snapshots.
         let mut state = setup_game_at_main_phase();
         let obj_id = create_object(
             &mut state,
@@ -12723,47 +12725,14 @@ mod tests {
         add_mana(&mut state, PlayerId(0), ManaType::Black, 2);
         add_mana(&mut state, PlayerId(0), ManaType::Colorless, 3);
 
-        let controller_life_before = state.players[0].life;
-        let opponent_life_before = state.players[1].life;
+        let mut runner = crate::game::scenario::GameRunner::from_state(state);
+        let outcome = runner.cast(obj_id).x(3).resolve();
 
-        let result = apply_as_current(
-            &mut state,
-            GameAction::CastSpell {
-                object_id: obj_id,
-                card_id: CardId(910),
-                targets: vec![],
-            },
-        )
-        .unwrap();
-        let max = match result.waiting_for {
-            WaitingFor::ChooseXValue { max, .. } => max,
-            other => panic!("expected ChooseXValue, got {other:?}"),
-        };
-        assert_eq!(
-            max, 3,
-            "3 colorless mana bounds the generic {{X}} portion at 3"
-        );
-
-        apply_as_current(&mut state, GameAction::ChooseX { value: 3 }).unwrap();
-
-        for _ in 0..5 {
-            if state.stack.is_empty() && matches!(state.waiting_for, WaitingFor::Priority { .. }) {
-                break;
-            }
-            let _ = apply_as_current(&mut state, GameAction::PassPriority).unwrap();
-        }
-
-        assert_eq!(
-            opponent_life_before - state.players[1].life,
-            3,
-            "the single opponent loses exactly X = 3 life"
-        );
-        // 2-player: only one opponent lost life, so the sum is 3.
-        assert_eq!(
-            state.players[0].life - controller_life_before,
-            3,
-            "controller gains exactly the 3 life lost this way (sum across opponents)"
-        );
+        // CR 119.3: the single opponent loses exactly X = 3 life.
+        outcome.assert_life_delta(PlayerId(1), -3);
+        // 2-player: only one opponent lost life, so the controller's gain (the
+        // sum across opponents) is exactly 3 (CR 608.2c PreviousEffectAmount).
+        outcome.assert_life_delta(PlayerId(0), 3);
     }
 
     /// Exsanguinate in a 3-player game locks the SUM-across-opponents semantic
@@ -12777,7 +12746,6 @@ mod tests {
     ///   `QuantityRef::PreviousEffectAmount`.
     #[test]
     fn exsanguinate_three_player_controller_gains_sum_across_opponents() {
-        use super::super::engine::apply_as_current;
         use crate::types::ability::AbilityKind;
         use crate::types::format::FormatConfig;
         use crate::types::zones::Zone;
@@ -12818,49 +12786,17 @@ mod tests {
         add_mana(&mut state, PlayerId(0), ManaType::Black, 2);
         add_mana(&mut state, PlayerId(0), ManaType::Colorless, 3);
 
-        let controller_life_before = state.players[0].life;
-        let opp1_life_before = state.players[1].life;
-        let opp2_life_before = state.players[2].life;
+        // Drive the cast through the canonical pipeline; assert the SUM-vs-
+        // per-opponent discriminator via `CastOutcome` life deltas.
+        let mut runner = crate::game::scenario::GameRunner::from_state(state);
+        let outcome = runner.cast(obj_id).x(3).resolve();
 
-        let result = apply_as_current(
-            &mut state,
-            GameAction::CastSpell {
-                object_id: obj_id,
-                card_id: CardId(911),
-                targets: vec![],
-            },
-        )
-        .unwrap();
-        assert!(matches!(
-            result.waiting_for,
-            WaitingFor::ChooseXValue { max: 3, .. }
-        ));
-
-        apply_as_current(&mut state, GameAction::ChooseX { value: 3 }).unwrap();
-
-        for _ in 0..5 {
-            if state.stack.is_empty() && matches!(state.waiting_for, WaitingFor::Priority { .. }) {
-                break;
-            }
-            let _ = apply_as_current(&mut state, GameAction::PassPriority).unwrap();
-        }
-
-        assert_eq!(
-            opp1_life_before - state.players[1].life,
-            3,
-            "opponent 1 loses exactly X = 3 life"
-        );
-        assert_eq!(
-            opp2_life_before - state.players[2].life,
-            3,
-            "opponent 2 loses exactly X = 3 life"
-        );
+        // CR 119.3: each opponent loses exactly X = 3 life.
+        outcome.assert_life_delta(PlayerId(1), -3);
+        outcome.assert_life_delta(PlayerId(2), -3);
         // SUM-across-opponents: 3 + 3 = 6, NOT 3 (max/single opponent).
-        assert_eq!(
-            state.players[0].life - controller_life_before,
-            6,
-            "controller gains the SUM of life lost across both opponents (3+3=6)"
-        );
+        // CR 608.2c: the GainLife sub-ability reads the accumulated life lost.
+        outcome.assert_life_delta(PlayerId(0), 6);
     }
 
     /// Passing priority during `ChooseXValue` is illegal — caster must commit
@@ -16476,51 +16412,22 @@ mod tests {
         add_mana(&mut state, PlayerId(0), ManaType::Green, 1);
         add_mana(&mut state, PlayerId(0), ManaType::Colorless, 2);
 
-        // CR 601.2b: X for the additional cost is announced as the spell is cast.
-        let waiting = handle_cast_spell(
-            &mut state,
-            PlayerId(0),
-            spell,
-            CardId(15404),
-            &mut Vec::new(),
-        )
-        .expect("pay-X-life additional cost should prompt for X");
-        state.waiting_for = waiting;
-        match state.waiting_for {
-            // CR 119.4: the maximum payable life equals the full life total (20).
-            WaitingFor::ChooseXValue { max, .. } => assert_eq!(max, 20),
-            ref other => panic!("expected ChooseXValue, got {other:?}"),
-        }
+        // CR 601.2b: X for the additional pay-life cost is announced as the spell
+        // is cast; the fluent driver announces X=3 and resolves the DestroyAll.
+        let mut runner = crate::game::scenario::GameRunner::from_state(state);
+        let outcome = runner.cast(spell).x(3).resolve();
 
-        apply_as_current(&mut state, GameAction::ChooseX { value: 3 }).unwrap();
-        // CR 119.4: 3 life actually paid; CR 601.2f: the mana cost is also paid.
-        assert_eq!(state.players[0].life, 17);
-        assert_eq!(state.players[0].mana_pool.total(), 0);
-        assert_eq!(state.stack.len(), 1);
-        // CR 107.3: the announced X is locked onto the spell on the stack.
-        match &state.stack[0].kind {
-            StackEntryKind::Spell {
-                ability: Some(ability),
-                ..
-            } => assert_eq!(ability.chosen_x, Some(3)),
-            other => panic!("expected spell on stack, got {other:?}"),
-        }
-
-        for _ in 0..5 {
-            if state.stack.is_empty() && matches!(state.waiting_for, WaitingFor::Priority { .. }) {
-                break;
-            }
-            apply_as_current(&mut state, GameAction::PassPriority).unwrap();
-        }
+        // CR 119.4: exactly 3 life paid for the additional cost (shared X = 3).
+        outcome.assert_life_delta(PlayerId(0), -3);
+        // CR 601.2f: the mana cost is fully paid (pool drained).
+        assert_eq!(outcome.state().players[0].mana_pool.total(), 0);
 
         // CR 701.8a + CR 202.3: at X=3, artifact MV2 and creature MV3 (LE bound)
-        // are destroyed to the owner's graveyard.
-        assert_eq!(state.objects[&artifact_mv2].zone, Zone::Graveyard);
-        assert_eq!(state.objects[&creature_mv3].zone, Zone::Graveyard);
-        // Creature MV4 exceeds X=3 and survives on the battlefield.
-        assert_eq!(state.objects[&creature_mv4].zone, Zone::Battlefield);
-        // The land matches neither Or branch (not artifact/creature) and survives.
-        assert_eq!(state.objects[&land].zone, Zone::Battlefield);
+        // are destroyed to the owner's graveyard; creature MV4 exceeds X=3 and
+        // the land matches neither Or branch — both survive on the battlefield.
+        // This proves the single shared X (CR 107.3) drives the DestroyAll filter.
+        outcome.assert_zone(&[artifact_mv2, creature_mv3], Zone::Graveyard);
+        outcome.assert_zone(&[creature_mv4, land], Zone::Battlefield);
     }
 
     #[test]
@@ -22153,6 +22060,263 @@ mod tests {
             }
             other => panic!("expected target selection after choosing X, got {other:?}"),
         }
+    }
+
+    /// Build a Kozilek's Command spell object from the REAL parsed Oracle text
+    /// (the same `parse_oracle_text` entry the card-data pipeline uses), so the
+    /// runtime tests below drive the four parsed modes — not a hand-built
+    /// `ModalChoice`. The parsed abilities + modal metadata are written onto a
+    /// fresh hand-zone instant with the printed `{X}{C}{C}` cost.
+    fn build_kozileks_command(state: &mut GameState, card_id: CardId) -> ObjectId {
+        let parsed = crate::parser::oracle::parse_oracle_text(
+            "Choose two —\n\
+             • Target player creates X 0/1 colorless Eldrazi Spawn creature tokens with \"Sacrifice this token: Add {C}.\"\n\
+             • Target player scries X, then draws a card.\n\
+             • Exile target creature with mana value X or less.\n\
+             • Exile up to X target cards from graveyards.",
+            "Kozilek's Command",
+            &[],
+            &["Kindred".to_string(), "Instant".to_string()],
+            &["Eldrazi".to_string()],
+        );
+        assert_eq!(
+            parsed.abilities.len(),
+            4,
+            "Kozilek's Command must parse four modes before driving the runtime"
+        );
+        let spell_id = create_object(
+            state,
+            card_id,
+            PlayerId(0),
+            "Kozilek's Command".to_string(),
+            Zone::Hand,
+        );
+        let obj = state.objects.get_mut(&spell_id).unwrap();
+        obj.card_types.core_types.push(CoreType::Instant);
+        obj.mana_cost = ManaCost::Cost {
+            shards: vec![
+                ManaCostShard::X,
+                ManaCostShard::Colorless,
+                ManaCostShard::Colorless,
+            ],
+            generic: 0,
+        };
+        // Attach the real parsed abilities + modal. These are the same fields
+        // `apply_card_face_to_object` writes; the spell is cast straight from
+        // hand without a layer re-evaluation, so the live fields suffice.
+        obj.abilities = Arc::new(parsed.abilities.clone());
+        obj.base_abilities = Arc::new(parsed.abilities);
+        obj.modal = parsed.modal;
+        spell_id
+    }
+
+    fn add_creature_with_mv(
+        state: &mut GameState,
+        card_id: CardId,
+        controller: PlayerId,
+        name: &str,
+        mana_value: u32,
+    ) -> ObjectId {
+        let id = create_object(
+            state,
+            card_id,
+            controller,
+            name.to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Creature);
+        obj.power = Some(2);
+        obj.toughness = Some(2);
+        obj.mana_cost = ManaCost::generic(mana_value);
+        id
+    }
+
+    /// CR 700.2 + CR 700.2c + CR 601.2b: Pairing A drives the real four-mode
+    /// Kozilek's Command through `apply()` with modes [0, 2] chosen (create X
+    /// Eldrazi Spawn + exile target creature with mana value X or less). After
+    /// X = 2 is announced (CR 601.2b before targets), the MV<=2 creature is a
+    /// legal exile target while the MV-3 creature is not (X-resolved Cmc
+    /// legality). Resolution creates exactly 2 Eldrazi Spawn tokens for the
+    /// targeted player and exiles the chosen creature.
+    #[test]
+    fn kozileks_command_modes_tokens_and_exile_creature_end_to_end() {
+        let mut state = setup_game_at_main_phase();
+        let spell_id = build_kozileks_command(&mut state, CardId(61));
+
+        let small = add_creature_with_mv(&mut state, CardId(62), PlayerId(1), "Two Drop", 2);
+        let big = add_creature_with_mv(&mut state, CardId(63), PlayerId(1), "Three Drop", 3);
+        add_mana(&mut state, PlayerId(0), ManaType::Colorless, 4);
+
+        // Drive the modal cast through the canonical pipeline: choose modes
+        // 0 (tokens) and 2 (exile target creature with MV X or less), announce
+        // X = 2, then declare the exile target (small) and the token owner (P0).
+        // The driver matches each declared intent to its slot, so no flat
+        // target vector is hand-built (CR 601.2c). NOTE: this test declares only
+        // `small` as the exile target, so `big` surviving below proves the cast
+        // resolved correctly — NOT that the MV<=X slot filter excluded it. That
+        // slot-legality exclusion is covered separately by
+        // `activated_modal_x_target_selection_carries_labels_and_pays_mana`.
+        let mut runner = crate::game::scenario::GameRunner::from_state(state);
+        let outcome = runner
+            .cast(spell_id)
+            .modes(&[0, 2])
+            .x(2)
+            .target_object(small)
+            .target_player(PlayerId(0))
+            .resolve();
+        let state = outcome.state();
+
+        // CR 701.13 + CR 406: the targeted creature is exiled.
+        assert_eq!(
+            state.objects[&small].zone,
+            Zone::Exile,
+            "mode 2 must exile the targeted MV<=2 creature"
+        );
+        assert_eq!(
+            state.objects[&big].zone,
+            Zone::Battlefield,
+            "the untargeted MV-3 creature must remain on the battlefield (it was never declared as a target)"
+        );
+        // Mode 0: the targeted player (P0) receives exactly X = 2 Eldrazi Spawn
+        // tokens, each a 0/1 with a Sacrifice: Add {C} ability.
+        let spawns: Vec<ObjectId> = state
+            .battlefield
+            .iter()
+            .copied()
+            .filter(|id| state.objects[id].name == "Eldrazi Spawn")
+            .collect();
+        assert_eq!(
+            spawns.len(),
+            2,
+            "X = 2 must create two Eldrazi Spawn tokens"
+        );
+        for token in &spawns {
+            let obj = &state.objects[token];
+            assert_eq!(
+                obj.owner,
+                PlayerId(0),
+                "tokens belong to the targeted player"
+            );
+            assert_eq!(obj.power, Some(0));
+            assert_eq!(obj.toughness, Some(1));
+            assert!(
+                obj.abilities.iter().any(|ability| {
+                    matches!(*ability.effect, Effect::Mana { .. })
+                        && matches!(
+                            ability.cost,
+                            Some(AbilityCost::Sacrifice {
+                                target: TargetFilter::SelfRef,
+                                count: 1
+                            })
+                        )
+                }),
+                "each Eldrazi Spawn must carry 'Sacrifice this token: Add {{C}}'"
+            );
+        }
+    }
+
+    /// CR 700.2 + CR 601.2b/c + CR 701.22a: Pairing B drives modes [1, 3]
+    /// (scry X then draw + exile up to X target cards from graveyards). This is
+    /// the path the planner flagged as previously unproven in the spell-cast
+    /// direction: the mode-3 "up to X" multi-target maximum is a
+    /// `QuantityExpr::Ref(Variable("X"))` carried on the parsed ability's
+    /// `multi_target` spec. `build_chained_resolved` propagates that spec into
+    /// the resolved chain and `ability_target_legality_needs_chosen_x` inspects
+    /// `multi_target.max`, so the cast must defer target selection until X is
+    /// announced; with X = 2 the mode-3 maximum resolves to 2 graveyard cards.
+    #[test]
+    fn kozileks_command_modes_scry_draw_and_exile_graveyard_end_to_end() {
+        let mut state = setup_game_at_main_phase();
+        let spell_id = build_kozileks_command(&mut state, CardId(71));
+
+        // Two cards in P0's graveyard for the mode-3 "up to X" exile.
+        let gy_a = create_object(
+            &mut state,
+            CardId(72),
+            PlayerId(0),
+            "Graveyard Card A".to_string(),
+            Zone::Graveyard,
+        );
+        let gy_b = create_object(
+            &mut state,
+            CardId(73),
+            PlayerId(0),
+            "Graveyard Card B".to_string(),
+            Zone::Graveyard,
+        );
+        // Library cards so the mode-1 scry has cards to look at and the
+        // follow-up draw has a card to draw.
+        for (idx, name) in ["Lib 1", "Lib 2", "Lib 3", "Lib 4"].iter().enumerate() {
+            let id = create_object(
+                &mut state,
+                CardId(74 + idx as u64),
+                PlayerId(0),
+                name.to_string(),
+                Zone::Library,
+            );
+            // Keep deterministic top-of-library ordering.
+            let player = state
+                .players
+                .iter_mut()
+                .find(|p| p.id == PlayerId(0))
+                .unwrap();
+            player.library.retain(|&oid| oid != id);
+            player.library.push_front(id);
+        }
+        add_mana(&mut state, PlayerId(0), ManaType::Colorless, 4);
+
+        // Drive the modal cast through the canonical pipeline: choose modes
+        // 1 (scry X, draw) and 3 (exile up to X target cards from graveyards),
+        // announce X = 2, then declare the scry player (P0) and both graveyard
+        // cards as the mode-3 "up to X = 2" targets. That both graveyard cards
+        // are accepted proves the "up to X" maximum resolved to 2
+        // (resolve_multi_target_bounds); the driver matches each declared
+        // intent to its slot in written order (CR 601.2c). The driver auto-
+        // answers the mid-resolution scry ordering prompt (CR 701.22a), keeping
+        // the looked-at cards on top.
+        let mut runner = crate::game::scenario::GameRunner::from_state(state);
+        let outcome = runner
+            .cast(spell_id)
+            .modes(&[1, 3])
+            .x(2)
+            .target_player(PlayerId(0))
+            .target_objects(&[gy_a, gy_b])
+            .resolve();
+
+        // CR 701.22a + draw + CR 601.2a: the hand baseline is captured at stack
+        // commit, so the only hand change during resolution is mode 1's single
+        // draw (scry never changes hand size; the mode-3 exile moves
+        // graveyard->exile, never the hand).
+        outcome.assert_hand_drawn(PlayerId(0), 1);
+        // CR 701.13 + CR 406: both selected graveyard cards are exiled.
+        outcome.assert_zone(&[gy_a, gy_b], Zone::Exile);
+    }
+
+    /// CR 700.2 + CR 700.2d: Kozilek's Command is a "Choose two —" spell, so
+    /// `validate_modal_indices` must reject both under-selection (one mode) and
+    /// over-selection (three modes) of the real parsed modal metadata.
+    #[test]
+    fn kozileks_command_rejects_wrong_mode_cardinality() {
+        let mut state = setup_game_at_main_phase();
+        let spell_id = build_kozileks_command(&mut state, CardId(91));
+        let modal = state.objects[&spell_id]
+            .modal
+            .clone()
+            .expect("Kozilek's Command must carry modal metadata");
+
+        assert!(
+            crate::game::ability_utils::validate_modal_indices(&modal, &[0], &[]).is_err(),
+            "choosing one mode must be rejected for a 'Choose two —' spell"
+        );
+        assert!(
+            crate::game::ability_utils::validate_modal_indices(&modal, &[0, 1, 2], &[]).is_err(),
+            "choosing three modes must be rejected for a 'Choose two —' spell"
+        );
+        assert!(
+            crate::game::ability_utils::validate_modal_indices(&modal, &[0, 1], &[]).is_ok(),
+            "choosing exactly two distinct modes must be accepted"
+        );
     }
 
     /// CR 602.2b + CR 601.2b/c: Activated abilities follow the same mode/X/target
