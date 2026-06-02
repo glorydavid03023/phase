@@ -1476,6 +1476,7 @@ fn combat_requirement_conjunct_prepend(
     let remainder_lower = remainder_trimmed.to_ascii_lowercase();
     if !super::imperative::is_standalone_combat_requirement(&remainder_lower)
         && !super::subject::is_can_block_extra_predicate(&remainder_lower)
+        && !super::subject::is_can_attack_despite_defender_predicate(&remainder_lower)
     {
         return None;
     }
@@ -2859,6 +2860,7 @@ pub(super) fn clause_is_dig_lookback_transparent(effect: &Effect) -> bool {
         | Effect::CastCopyOfCard { .. }
         | Effect::CopyTokenOf { .. }
         | Effect::Myriad
+        | Effect::CopyTokenBlockingAttacker { .. }
         | Effect::BecomeCopy { .. }
         | Effect::ChooseCard { .. }
         | Effect::PutCounter { .. }

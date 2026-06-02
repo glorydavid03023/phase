@@ -344,6 +344,11 @@ fn fallback_action(state: &GameState) -> Option<GameAction> {
         | WaitingFor::UnlessBounceChoice { .. } => {
             Some(GameAction::SelectCards { cards: Vec::new() })
         }
+        // CR 705.1 + CR 614.1a: Krark's Thumb keep choice — keep the first
+        // `keep_count` flips (always in range, since keep_count <= results.len()).
+        WaitingFor::CoinFlipKeepChoice { keep_count, .. } => Some(GameAction::SelectCoinFlips {
+            keep_indices: (0..*keep_count).collect(),
+        }),
         // CR 608.2d: SearchPartitionChoice requires EXACTLY primary_count cards —
         // an empty selection is illegal. Deterministically take the first
         // primary_count of the found set for the battlefield (rest auto-route).
@@ -541,6 +546,11 @@ fn fallback_action(state: &GameState) -> Option<GameAction> {
         WaitingFor::TopOrBottomChoice { .. } | WaitingFor::ClashCardPlacement { .. } => {
             Some(GameAction::ChooseTopOrBottom { top: true })
         }
+
+        // CR 701.30b: clash opponent choice — fall back to the first candidate.
+        WaitingFor::ClashChooseOpponent { candidates, .. } => candidates
+            .first()
+            .map(|&opponent| GameAction::ChooseClashOpponent { opponent }),
 
         // Adventure/MDFC/alt-cost choice: default to the "normal" face/cost.
         WaitingFor::CastOffer {

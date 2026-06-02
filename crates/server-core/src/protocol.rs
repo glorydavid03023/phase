@@ -285,6 +285,14 @@ pub enum ServerMessage {
         /// Omitted (None) for hosts (who get it via GameCreated) and reconnects.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         player_token: Option<String>,
+        /// Engine events produced by `start_game` — currently the d20
+        /// first-player contest (`DieRolled`) batch. Populated ONLY on the
+        /// initial post-start broadcast; empty for late joiners and reconnects
+        /// (a reconnecting player must not re-see the contest dice). Rolls are
+        /// public (no `visibility.rs` redaction), so the full batch goes to
+        /// every seat. `serde(default)` keeps this back-compat for older clients.
+        #[serde(default)]
+        events: Vec<GameEvent>,
     },
     StateUpdate {
         state: GameState,
@@ -713,6 +721,21 @@ mod tests {
         }
     }
 
+    mod emote_guard_tests {
+        use crate::emote_guard::{guard_emote, MAX_EMOTE_LEN};
+
+        #[test]
+        fn emote_accepts_valid_text() {
+            assert!(guard_emote("GG").is_ok());
+        }
+
+        #[test]
+        fn emote_rejects_oversized_text() {
+            let err = guard_emote(&"a".repeat(MAX_EMOTE_LEN + 1)).unwrap_err();
+            assert!(err.contains("emote"));
+        }
+    }
+
     #[test]
     fn server_message_game_started_with_opponent_name_roundtrips() {
         let state = GameState::new_two_player(42);
@@ -727,6 +750,7 @@ mod tests {
             legal_actions_by_object: HashMap::new(),
             derived: Default::default(),
             player_token: None,
+            events: vec![],
         };
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: ServerMessage = serde_json::from_str(&json).unwrap();
@@ -761,6 +785,7 @@ mod tests {
             legal_actions_by_object: HashMap::new(),
             derived: Default::default(),
             player_token: None,
+            events: vec![],
         };
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: ServerMessage = serde_json::from_str(&json).unwrap();

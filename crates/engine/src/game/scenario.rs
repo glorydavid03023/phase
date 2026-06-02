@@ -1279,6 +1279,7 @@ impl GameRunner {
             WaitingFor::ReturnAsAuraTarget { .. } => "ReturnAsAuraTarget",
             WaitingFor::EquipTarget { .. } => "EquipTarget",
             WaitingFor::ScryChoice { .. } => "ScryChoice",
+            WaitingFor::CoinFlipKeepChoice { .. } => "CoinFlipKeepChoice",
             WaitingFor::DigChoice { .. } => "DigChoice",
             WaitingFor::SurveilChoice { .. } => "SurveilChoice",
             WaitingFor::RevealChoice { .. } => "RevealChoice",
@@ -1324,6 +1325,9 @@ impl GameRunner {
                 }
                 crate::types::game_state::AlternativeCastKeyword::Cleave => {
                     "AlternativeCastChoice(Cleave)"
+                }
+                crate::types::game_state::AlternativeCastKeyword::MoreThanMeetsTheEye => {
+                    "AlternativeCastChoice(MoreThanMeetsTheEye)"
                 }
             },
             WaitingFor::CastingVariantChoice { .. } => "CastingVariantChoice",
@@ -1374,6 +1378,7 @@ impl GameRunner {
             WaitingFor::ChooseDungeon { .. } => "ChooseDungeon",
             WaitingFor::ChooseDungeonRoom { .. } => "ChooseDungeonRoom",
             WaitingFor::PopulateChoice { .. } => "PopulateChoice",
+            WaitingFor::ClashChooseOpponent { .. } => "ClashChooseOpponent",
             WaitingFor::ClashCardPlacement { .. } => "ClashCardPlacement",
             WaitingFor::VoteChoice { .. } => "VoteChoice",
             WaitingFor::CategoryChoice { .. } => "CategoryChoice",
