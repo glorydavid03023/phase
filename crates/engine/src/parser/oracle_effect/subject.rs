@@ -2133,6 +2133,15 @@ fn try_parse_set_life_total(
     application: &SubjectApplication,
 ) -> Option<ParsedEffectClause> {
     let lower = become_text.to_lowercase();
+    // CR 119.5: "life total becomes equal to <quantity>" — strip the optional
+    // "equal to" connector so the quantity parser below sees the bare quantity
+    // ("equal to your starting life total" → "your starting life total";
+    // Oketra's Last Mercy, Resolute Archangel). Forms without the connector
+    // ("becomes half your starting life total", "becomes 10") are unaffected.
+    let lower = lower
+        .strip_prefix("equal to ")
+        .map(str::to_string)
+        .unwrap_or(lower);
 
     let amount = if nom_primitives::scan_contains(&lower, "starting life total") {
         let amount_text = lower.trim().trim_end_matches('.');
@@ -3104,6 +3113,33 @@ mod tests {
             matches!(&*ability.effect, Effect::TakeTheInitiative),
             "expected TakeTheInitiative, got {:?}",
             ability.effect
+        );
+    }
+
+    #[test]
+    fn set_life_total_becomes_equal_to_starting_life_total() {
+        use crate::types::ability::{QuantityExpr, QuantityRef};
+        // Oketra's Last Mercy: "Your life total becomes equal to your starting life total."
+        let def = crate::parser::oracle_effect::parse_effect_chain(
+            "Your life total becomes equal to your starting life total.",
+            AbilityKind::Spell,
+        );
+        let mut found = None;
+        let mut node = Some(&def);
+        while let Some(d) = node {
+            if let Effect::SetLifeTotal { amount, .. } = &*d.effect {
+                found = Some(amount.clone());
+            }
+            node = d.sub_ability.as_deref();
+        }
+        assert!(
+            matches!(
+                found,
+                Some(QuantityExpr::Ref {
+                    qty: QuantityRef::StartingLifeTotal
+                })
+            ),
+            "expected SetLifeTotal(StartingLifeTotal), got {found:?}"
         );
     }
 
