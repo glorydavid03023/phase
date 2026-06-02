@@ -1281,13 +1281,17 @@ fn parse_mana_value_threshold(rest: &str) -> Option<(Comparator, u32)> {
     let comparator = if after_num.is_empty() {
         Comparator::EQ
     } else if nom_on_lower(after_num, &after_num_lower, |i| {
-        alt((value((), tag("or greater")), value((), tag("or more")))).parse(i)
+        all_consuming(alt((
+            value((), tag("or greater")),
+            value((), tag("or more")),
+        )))
+        .parse(i)
     })
     .is_some()
     {
         Comparator::GE
     } else if nom_on_lower(after_num, &after_num_lower, |i| {
-        value((), tag("or less")).parse(i)
+        all_consuming(value((), tag("or less"))).parse(i)
     })
     .is_some()
     {

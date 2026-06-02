@@ -10993,6 +10993,15 @@ mod tests {
     }
 
     #[test]
+    fn mana_spend_restriction_mana_value_rejects_trailing_text() {
+        use crate::parser::oracle_effect::mana::parse_mana_spend_restriction;
+        let result = parse_mana_spend_restriction(
+            "spend this mana only to cast spells with mana value 5 or greater nonsense",
+        );
+        assert_eq!(result, None);
+    }
+
+    #[test]
     fn mana_spend_restriction_chosen_type_cant_be_countered() {
         use crate::parser::oracle_effect::mana::parse_mana_spend_restriction;
         use crate::types::mana::ManaSpellGrant;

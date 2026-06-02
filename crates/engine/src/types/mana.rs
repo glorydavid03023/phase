@@ -1697,6 +1697,37 @@ mod tests {
         assert!(!restriction.allows_spell(&mv_four));
     }
 
+    #[test]
+    fn spend_for_enforces_mana_value_restriction() {
+        let mut pool = ManaPool::default();
+        pool.add(make_restricted_unit(
+            ManaType::Green,
+            ObjectId(1),
+            vec![ManaRestriction::OnlyForSpellWithManaValue {
+                comparator: Comparator::GE,
+                value: 5,
+            }],
+        ));
+
+        let mv_four = SpellMeta {
+            mana_value: Some(4),
+            ..SpellMeta::default()
+        };
+        assert!(pool
+            .spend_for(ManaType::Green, &PaymentContext::Spell(&mv_four))
+            .is_none());
+        assert_eq!(pool.total(), 1);
+
+        let mv_five = SpellMeta {
+            mana_value: Some(5),
+            ..SpellMeta::default()
+        };
+        assert!(pool
+            .spend_for(ManaType::Green, &PaymentContext::Spell(&mv_five))
+            .is_some());
+        assert_eq!(pool.total(), 0);
+    }
+
     // CR 106.6: a mana-value gate names spell casting, so it rejects ability
     // activation regardless of comparator.
     #[test]
