@@ -16534,12 +16534,12 @@ mod tests {
     use super::*;
     use crate::types::ability::{
         AbilityCondition, AggregateFunction, BounceSelection, CardTypeSetSource, CastVariantPaid,
-        ChoiceType, CombatRelation, CombatRelationSubject, Comparator, ContinuousModification,
-        ControllerRef, CopyRetargetPermission, CountScope, DoublePTMode, Duration, FilterProp,
-        LibraryPosition, LinkedExileScope, ManaContribution, ManaProduction, ObjectProperty,
-        ObjectScope, PaymentCost, PermissionGrantee, PtStat, PtValue, PtValueScope, QuantityExpr,
-        QuantityRef, SearchSelectionConstraint, SharedQuality, TargetChoiceTiming, TypeFilter,
-        TypedFilter, ZoneRef,
+        ChoiceType, ChosenSubtypeKind, CombatRelation, CombatRelationSubject, Comparator,
+        ContinuousModification, ControllerRef, CopyRetargetPermission, CountScope, DoublePTMode,
+        Duration, FilterProp, LibraryPosition, LinkedExileScope, ManaContribution, ManaProduction,
+        ObjectProperty, ObjectScope, PaymentCost, PermissionGrantee, PtStat, PtValue, PtValueScope,
+        QuantityExpr, QuantityRef, SearchSelectionConstraint, SharedQuality, TargetChoiceTiming,
+        TypeFilter, TypedFilter, ZoneRef,
     };
     use crate::types::card_type::{CoreType, Supertype};
     use crate::types::game_state::{DistributionUnit, TargetSelectionConstraint};
@@ -27389,14 +27389,13 @@ mod tests {
         assert!(*tapped);
     }
 
-    /// CR 205.3 + CR 700.1: "Choose a creature type other than Wall. Target
+    /// CR 205.3e + CR 607.2d: "Choose a creature type other than Wall. Target
     /// creature becomes that type until end of turn." (Imagecrafter, Unnatural
     /// Selection, Mistform Mutant, Standardize). "becomes that type" applies the
     /// chosen creature type via a continuous `AddChosenSubtype(CreatureType)` —
     /// not an Unimplemented fallback or a mis-tokenized "That"/"Type" subtype.
     #[test]
     fn becomes_that_type_applies_chosen_creature_type() {
-        use crate::types::ability::{ChosenSubtypeKind, ContinuousModification};
         let def = parse_effect_chain(
             "Choose a creature type other than Wall. Target creature becomes that type until end of turn.",
             AbilityKind::Activated,
