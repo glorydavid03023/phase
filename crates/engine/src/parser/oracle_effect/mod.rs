@@ -26521,6 +26521,38 @@ mod tests {
         }
     }
 
+    /// CR 602.5 + CR 605.1a: EFFECT-form activation prohibitions preserve the
+    /// shared mana-ability exemption suffix instead of defaulting every
+    /// transient `CantBeActivated` static to `ActivationExemption::None`.
+    #[test]
+    fn cant_be_activated_effect_standalone_preserves_mana_exemption() {
+        use crate::types::statics::{ActivationExemption, StaticMode};
+        let def = parse_effect_chain(
+            "target creature's activated abilities can't be activated unless they're mana abilities",
+            AbilityKind::Spell,
+        );
+        let Effect::GenericEffect {
+            static_abilities, ..
+        } = &*def.effect
+        else {
+            panic!("expected GenericEffect, got {:?}", def.effect);
+        };
+        let sd = static_abilities
+            .first()
+            .expect("expected transient CantBeActivated static");
+        assert!(
+            matches!(
+                &sd.mode,
+                StaticMode::CantBeActivated {
+                    exemption: ActivationExemption::ManaAbilities,
+                    ..
+                }
+            ),
+            "expected mana-ability exemption, got {:?}",
+            sd.mode
+        );
+    }
+
     /// CR 602.5 + CR 603.2a + CR 608.2c: Dovin Baan's +1 — "up to one target
     /// creature gets -3/-0 and its activated abilities can't be activated."
     /// The compound splits into a Pump primary and a CantBeActivated conjunct

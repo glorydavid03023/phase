@@ -1,8 +1,8 @@
 use crate::parser::oracle_nom::error::OracleError;
 use nom::branch::alt;
-use nom::bytes::complete::{tag, take_till};
+use nom::bytes::complete::{tag, take_till, take_until};
 use nom::combinator::{all_consuming, map, opt, value, verify};
-use nom::sequence::preceded;
+use nom::sequence::{preceded, terminated};
 use nom::Parser;
 
 use super::animation::{
@@ -1285,12 +1285,25 @@ fn subject_application_for_cant_be_activated(
     // Typed possessor noun phrases carry a trailing "'s" ("target creature's",
     // "~'s", "each creature you control's"). Strip the possessive marker so the
     // remaining noun phrase routes through the full subject grammar.
-    let possessor = subject
-        .strip_suffix("'s")
-        .or_else(|| subject.strip_suffix("\u{2019}s"))
-        .map(str::trim)
-        .unwrap_or(subject);
+    let possessor = strip_possessive_subject_suffix(subject);
     parse_subject_application(possessor, ctx)
+}
+
+fn strip_possessive_subject_suffix(subject: &str) -> &str {
+    type VE<'a> = OracleError<'a>;
+
+    let mut parser = alt((
+        all_consuming(terminated(take_until::<_, _, VE>("'s"), tag("'s"))),
+        all_consuming(terminated(
+            take_until::<_, _, VE>("\u{2019}s"),
+            tag("\u{2019}s"),
+        )),
+    ));
+
+    parser
+        .parse(subject)
+        .map(|(_, possessor)| possessor.trim())
+        .unwrap_or(subject)
 }
 
 /// CR 608.2k: Resolve bare pronoun "they" based on parser context.
