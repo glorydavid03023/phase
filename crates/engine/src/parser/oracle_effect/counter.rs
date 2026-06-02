@@ -302,6 +302,18 @@ pub(super) fn try_parse_put_counter<'a>(
                 }
                 Err(_) => (QuantityExpr::Fixed { value: 0 }, after_phrase, true),
             }
+        } else if nom_primitives::scan_contains(after_put, "equal to")
+            && nom_primitives::parse_counter_type_typed(after_put).is_ok()
+        {
+            // CR 122.1 + CR 208.3: a counter type follows "put" directly with no
+            // leading count and no "a number of", and an "equal to {qty}" clause
+            // supplies the count after the target ("put +1/+1 counters on it
+            // equal to its power" — The Roaring Toeclaws, Experiment Twelve).
+            // The "equal to" guard distinguishes this from implicit-count puts
+            // ("put a +1/+1 counter on ~"), which have no dynamic clause. Enter
+            // the dynamic path so the deferred post-target resolution fills the
+            // count.
+            (QuantityExpr::Fixed { value: 0 }, after_put, true)
         } else {
             let (qty, rest) = parse_count_expr(after_put)?;
             (qty, rest, false)
@@ -1228,6 +1240,37 @@ mod tests {
             .properties
             .iter()
             .any(|p| matches!(p, FilterProp::Named { name } if name.eq_ignore_ascii_case("Gruff Triplets"))));
+    }
+
+    /// CR 122.1 + CR 208.3: target-then-count ordering with NO "a number of"
+    /// and no leading count — "put +1/+1 counters on <target> equal to its
+    /// power" (The Roaring Toeclaws, Experiment Twelve). The counter type
+    /// follows "put" directly; the count is supplied by the post-target
+    /// "equal to {qty}" clause and binds to the target's power.
+    #[test]
+    fn put_counter_on_target_equal_to_power_no_leading_count() {
+        use crate::types::ability::QuantityRef;
+        let text = "put +1/+1 counters on target creature equal to its power";
+        let (effect, _, _) = try_parse_put_counter(text, text, &mut default_ctx()).expect("parse");
+        let Effect::PutCounter {
+            counter_type,
+            count,
+            target,
+        } = effect
+        else {
+            panic!("expected PutCounter, got {effect:?}");
+        };
+        assert_eq!(counter_type, CounterType::Plus1Plus1);
+        assert!(
+            matches!(
+                count,
+                QuantityExpr::Ref {
+                    qty: QuantityRef::Power { .. }
+                }
+            ),
+            "count should be a Power ref, got {count:?}"
+        );
+        assert!(matches!(target, TargetFilter::Typed { .. }));
     }
 
     /// CR 603.7c: Dusty Parlor — "Whenever you cast an enchantment spell,
