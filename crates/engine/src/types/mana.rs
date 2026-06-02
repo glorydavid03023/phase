@@ -302,6 +302,11 @@ pub enum ManaRestriction {
     /// greater" (or "or less"). `comparator` applies `spell_mana_value <cmp>
     /// value`. Parameterized over [`Comparator`] — one variant per threshold reading.
     OnlyForSpellWithManaValue { comparator: Comparator, value: u32 },
+    /// CR 106.6 + CR 400.7: "Spend this mana only to cast spells from your
+    /// graveyard" / "from exile". Gates on the spell's cast-from zone, consulting
+    /// `SpellMeta.cast_from_zone`. A distinct axis from
+    /// `OnlyForSpellWithKeywordKindFromZone` (which also requires a keyword).
+    OnlyForSpellFromZone(crate::types::zones::Zone),
     /// CR 702.51a: Internal marker for a convoke tap that substitutes for
     /// paying mana. The payment algorithm may consume it for the current spell,
     /// but cast-spent metrics and mana-added triggers must ignore it.
@@ -375,6 +380,9 @@ impl ManaRestriction {
             ManaRestriction::OnlyForSpellWithManaValue { comparator, value } => meta
                 .mana_value
                 .is_some_and(|mv| comparator.evaluate(mv as i32, *value as i32)),
+            // CR 106.6 + CR 400.7: zone-gated spend — the spell must be cast from
+            // the named zone. A spell with no recorded cast-from zone is ineligible.
+            ManaRestriction::OnlyForSpellFromZone(zone) => meta.cast_from_zone == Some(*zone),
             ManaRestriction::ConvokePayment => true,
         }
     }
@@ -391,7 +399,8 @@ impl ManaRestriction {
             | ManaRestriction::OnlyForCreatureType(_)
             | ManaRestriction::OnlyForSpellWithKeywordKind(_)
             | ManaRestriction::OnlyForSpellWithKeywordKindFromZone(_, _)
-            | ManaRestriction::OnlyForSpellWithManaValue { .. } => false,
+            | ManaRestriction::OnlyForSpellWithManaValue { .. }
+            | ManaRestriction::OnlyForSpellFromZone(_) => false,
             // CR 106.6: The ability-activation half of the OR. "Elemental sources"
             // includes objects with creature type Elemental — consult subtypes too.
             ManaRestriction::OnlyForTypeSpellsOrAbilities(required_type) => {
@@ -1739,6 +1748,29 @@ mod tests {
         let source_types = vec!["Creature".to_string()];
         let source_subtypes: Vec<String> = vec![];
         assert!(!restriction.allows_activation(&source_types, &source_subtypes));
+    }
+
+    // CR 106.6 + CR 400.7: zone-gated spend allows only spells cast from the
+    // named zone; a different zone or an unknown (None) origin is ineligible,
+    // and the restriction never permits ability activation.
+    #[test]
+    fn restriction_allows_spell_from_zone() {
+        use crate::types::zones::Zone;
+        let restriction = ManaRestriction::OnlyForSpellFromZone(Zone::Graveyard);
+        let from_gy = SpellMeta {
+            cast_from_zone: Some(Zone::Graveyard),
+            ..SpellMeta::default()
+        };
+        let from_exile = SpellMeta {
+            cast_from_zone: Some(Zone::Exile),
+            ..SpellMeta::default()
+        };
+        assert!(restriction.allows_spell(&from_gy));
+        assert!(!restriction.allows_spell(&from_exile));
+        // No recorded cast-from zone → ineligible.
+        assert!(!restriction.allows_spell(&SpellMeta::default()));
+        // Zone-gated spend is spell-casting only.
+        assert!(!restriction.allows_activation(&["Creature".to_string()], &[]));
     }
 
     #[test]
