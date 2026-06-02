@@ -26575,12 +26575,10 @@ mod tests {
                 Effect::GenericEffect {
                     static_abilities, ..
                 } => {
-                    if static_abilities.iter().any(|sd| {
+                    saw_cant_be_activated |= static_abilities.iter().any(|sd| {
                         matches!(&sd.mode, StaticMode::CantBeActivated { .. })
                             && sd.affected == Some(TargetFilter::ParentTarget)
-                    }) {
-                        saw_cant_be_activated = true;
-                    }
+                    });
                 }
                 _ => {}
             }
