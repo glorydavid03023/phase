@@ -34,10 +34,10 @@ use crate::convert::token;
 use crate::convert::trigger as trigger_mod;
 use crate::schema::types::{
     Action, Actions, CardInExile, CardInGraveyard, CardType, CardsInHand, CounterType,
-    CreatureType, DamageRecipient, DamageToRecipients, DistributedTarget, Distribution,
-    FutureTrigger, GameNumber, GroupFilter, ManaUseModifier, Permanent, Player, Players,
-    ReplacementActionWouldEnter, RevealTheTopNumberCardsOfLibraryAction, Rule, SearchLibraryAction,
-    Spell, Spells, Target, TokenFlag,
+    CreatableToken, CreatureType, DamageRecipient, DamageToRecipients, DistributedTarget,
+    Distribution, FutureTrigger, GameNumber, GroupFilter, ManaUseModifier, Permanent, Player,
+    Players, ReplacementActionWouldEnter, RevealTheTopNumberCardsOfLibraryAction, Rule,
+    SearchLibraryAction, Spell, Spells, Target, TokenCopyEffects, TokenFlag,
 };
 
 /// Modal-choice arity for `ActionsConversion::Modal`. Mirrors the engine's
@@ -2685,11 +2685,15 @@ pub fn convert(a: &Action) -> ConvResult<Effect> {
             target: convert_permanents(filter)?,
             cant_regenerate: true,
         },
-        Action::DestroyEachPermanent(filter) => Effect::Destroy {
+        // CR 701.8a: "Destroy all X" — mass destruction uses DestroyAll, not
+        // the single-target Destroy resolver, so the full matching set is
+        // processed and the tracked set is populated correctly for downstream
+        // "for each X destroyed this way" sub-abilities.
+        Action::DestroyEachPermanent(filter) => Effect::DestroyAll {
             target: convert_permanents(filter)?,
             cant_regenerate: false,
         },
-        Action::DestroyEachPermanentNoRegen(filter) => Effect::Destroy {
+        Action::DestroyEachPermanentNoRegen(filter) => Effect::DestroyAll {
             target: convert_permanents(filter)?,
             cant_regenerate: true,
         },
@@ -3238,6 +3242,19 @@ pub fn convert(a: &Action) -> ConvResult<Effect> {
             target: convert_permanents(filter)?,
         },
 
+        // CR 122.1: Mass counter placement with an explicit count — "Put N
+        // [counter] on each [filter]." Numbered sibling of
+        // `PutACounterOfTypeOnEachPermanent`; same multi-match `TargetFilter`
+        // semantics, with the count lowered through `quantity::convert` so
+        // X-quantities (e.g. Oracle's Gift: "put X +1/+1 counters on each
+        // Fractal you control") become `QuantityRef::Variable { "X" }` and
+        // resolve from the spell's paid X at resolution.
+        Action::PutNumberCountersOfTypeOnEachPermanent(g, ct, filter) => Effect::AddCounter {
+            counter_type: counter_type_name(ct),
+            count: quantity::convert(g)?,
+            target: convert_permanents(filter)?,
+        },
+
         // CR 701.23 + CR 701.24: SearchLibrary is intrinsically multi-effect
         // — it expands to `SearchLibrary → ChangeZone → [Shuffle]`. Single-
         // effect callers cannot consume it; route through `convert_many` /
@@ -3464,6 +3481,66 @@ pub fn convert(a: &Action) -> ConvResult<Effect> {
                 });
             };
             apply_token_flags(token::convert(single)?, flags)?
+        }
+
+        // CR 509.1g + CR 506.3e + CR 707.2: "For each attacking creature, create
+        // a token that's a copy of that creature. Those tokens block those
+        // creatures." (Mirror Match.) The only supported shape is a single
+        // copy-of-each-permanent spec carrying just the "enters blocking the
+        // attacker it copies" flag — it lowers to
+        // `Effect::CopyTokenBlockingAttacker`, whose resolver copies each matched
+        // attacker and puts the copy onto the battlefield blocking it. The
+        // end-of-combat exile is a separate `CreateFutureTrigger` action over
+        // "those tokens". Any other token spec, copy-effect, or flag combination
+        // strict-fails until it has a dedicated slot.
+        Action::ForEachPermanentCreateTokensWithFlags(perms, specs, flags) => {
+            let [CreatableToken::TokenCopyOfPermanent(copy_perm, copy_effects)] = specs.as_slice()
+            else {
+                return Err(ConversionGap::MalformedIdiom {
+                    idiom: "Action::ForEachPermanentCreateTokensWithFlags",
+                    path: String::new(),
+                    detail: format!(
+                        "expected single copy-of-each token spec, got {} specs",
+                        specs.len()
+                    ),
+                });
+            };
+            if !matches!(**copy_perm, Permanent::EachablePermanent) {
+                return Err(ConversionGap::MalformedIdiom {
+                    idiom: "Action::ForEachPermanentCreateTokensWithFlags",
+                    path: String::new(),
+                    detail: "copy source is not the iterated EachablePermanent".to_string(),
+                });
+            }
+            // CR 707.2: a plain copy ("a copy of that creature") — copy-effect
+            // overrides on a blocking copy have no engine slot yet.
+            if !matches!(copy_effects, TokenCopyEffects::NoTokenCopyEffects) {
+                return Err(ConversionGap::EnginePrerequisiteMissing {
+                    engine_type: "Effect::CopyTokenBlockingAttacker",
+                    needed_variant: "copy-effects on a for-each blocking copy".to_string(),
+                });
+            }
+            match flags.as_slice() {
+                // CR 506.3e: "that token blocks the attacker it copies." The flag
+                // names the iterated permanent (the copy source) as the blocked
+                // attacker, which the resolver binds per-iteration.
+                [TokenFlag::EntersBlockingAttacker(block_perm)]
+                    if matches!(**block_perm, Permanent::EachablePermanent) =>
+                {
+                    Effect::CopyTokenBlockingAttacker {
+                        source_filter: convert_permanents(perms)?,
+                        owner: TargetFilter::Controller,
+                    }
+                }
+                _ => {
+                    return Err(ConversionGap::EnginePrerequisiteMissing {
+                        engine_type: "Effect::CopyTokenBlockingAttacker",
+                        needed_variant:
+                            "for-each copy-token flags beyond EntersBlockingAttacker(Eachable)"
+                                .to_string(),
+                    });
+                }
+            }
         }
 
         // CR 701.13 + CR 400.7: "Exile the top card of your library." Maps onto
@@ -6598,6 +6675,29 @@ mod tests {
         assert_eq!(*payer, TargetFilter::ParentTargetController);
         let sub = ability.sub_ability.as_ref().expect("expected paid body");
         assert!(matches!(sub.effect.as_ref(), Effect::Draw { .. }));
+    }
+
+    #[test]
+    fn put_number_counters_on_each_permanent_lowers_to_add_counter_with_x() {
+        // CR 122.1 + CR 107.1b: "Put X +1/+1 counters on each [filter]"
+        // (Oracle's Gift, Jadzi's prepare spell) lowers to a multi-match
+        // AddCounter whose count is the spell's paid X.
+        let effect = convert(&Action::PutNumberCountersOfTypeOnEachPermanent(
+            Box::new(GameNumber::ValueX),
+            CounterType::PTCounter(1, 1),
+            Box::new(Permanents::IsCardtype(CardType::Creature)),
+        ))
+        .unwrap();
+
+        let Effect::AddCounter { count, .. } = effect else {
+            panic!("expected AddCounter, got {effect:?}");
+        };
+        assert!(matches!(
+            count,
+            QuantityExpr::Ref {
+                qty: QuantityRef::Variable { name }
+            } if name == "X"
+        ));
     }
 
     #[test]
