@@ -289,6 +289,12 @@ pub(crate) fn resolve_restrictions(
                     value: *value,
                 })
             }
+            ManaSpendRestriction::SpellWithColorCount { comparator, count } => {
+                Some(ManaRestriction::OnlyForSpellWithColorCount {
+                    comparator: *comparator,
+                    count: *count,
+                })
+            }
             ManaSpendRestriction::SpellFromZone(zone) => {
                 Some(ManaRestriction::OnlyForSpellFromZone(*zone))
             }
