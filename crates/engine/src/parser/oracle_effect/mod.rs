@@ -27254,7 +27254,6 @@ mod tests {
         assert!(*tapped);
     }
 
-    /// CR 701.17a + CR 701.17c + CR 400.7j + CR 608.2c: "Mill a card, then draw
     /// CR 105.2 + CR 205.1a + CR 613.1d-e: Rise from the Grave reanimation —
     /// "Put target creature card from a graveyard onto the battlefield under your
     /// control. It's a black Zombie in addition to its other colors and types."
@@ -27263,7 +27262,6 @@ mod tests {
     /// subtype (layer 4) — not an Unimplemented fallback.
     #[test]
     fn reanimate_becomes_black_zombie_in_addition_to_colors_and_types() {
-        use crate::types::mana::ManaColor;
         let def = parse_effect_chain(
             "Put target creature card from a graveyard onto the battlefield under your control. It's a black Zombie in addition to its other colors and types.",
             AbilityKind::Spell,
@@ -27295,6 +27293,7 @@ mod tests {
         );
     }
 
+    /// CR 701.17a + CR 701.17c + CR 400.7j + CR 608.2c: "Mill a card, then draw
     /// cards equal to the milled card's mana value." — Heed the Mists.
     ///
     /// The `Mill` effect must chain (via `sub_ability`) to a `Draw` effect
