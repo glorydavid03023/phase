@@ -357,6 +357,40 @@ pub(crate) fn parse_static_line_inner(
         }
     }
 
+    // CR 305.7 + CR 305.6: "Enchanted land is the chosen type" — Aura sets the
+    // enchanted land's subtype to the basic land type chosen as the Aura entered
+    // (Phantasmal Terrain, Convincing Mirage). Replacement semantics (clears the
+    // land's old types AND its rules-text abilities) are carried by
+    // `SetChosenBasicLandType`, which reads the source's chosen type at layer
+    // eval time. Must come before the concrete "enchanted land is a <type>" arm;
+    // "is the chosen type" and "is a <type>" are disjoint prefixes so neither
+    // shadows the other. Combinator-pure: a fixed phrase with an optional trailing
+    // "." and an optional "and loses its other [land] types" tail (no semantic
+    // difference — CR 305.7 already removes the old land types).
+    {
+        let parse_chosen_land_type = (
+            tag::<_, _, OracleError<'_>>("enchanted land is the chosen type"),
+            opt(alt((
+                tag(" and loses its other land types"),
+                tag(" and loses its other types"),
+            ))),
+            opt(tag(".")),
+        );
+        if all_consuming(map(parse_chosen_land_type, |_| ()))
+            .parse(tp.lower)
+            .is_ok()
+        {
+            return Some(
+                StaticDefinition::continuous()
+                    .affected(TargetFilter::Typed(
+                        TypedFilter::land().properties(vec![FilterProp::EnchantedBy]),
+                    ))
+                    .modifications(vec![ContinuousModification::SetChosenBasicLandType])
+                    .description(text.to_string()),
+            );
+        }
+    }
+
     // CR 305.7: "Enchanted land is a [type]" — must be before general "enchanted land" handler.
     if let Some(rest) = nom_tag_tp(&tp, "enchanted land is a ") {
         let rest = rest.trim_end_matches('.');
