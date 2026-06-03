@@ -3082,17 +3082,17 @@ fn apply_continuous_effect_filtered(
     // basic land type) AND for `SetChosenBasicLandType` (CR 305.7 replacement
     // of a land's subtype with the source's chosen basic land type). The latter
     // is implicitly `ChosenSubtypeKind::BasicLandType`.
-    let chosen_subtype = match effect.modification {
-        ContinuousModification::AddChosenSubtype { ref kind } => state
-            .objects
-            .get(&effect.source_id)
-            .and_then(|src| src.chosen_subtype_str(kind)),
-        ContinuousModification::SetChosenBasicLandType => state
-            .objects
-            .get(&effect.source_id)
-            .and_then(|src| src.chosen_subtype_str(&ChosenSubtypeKind::BasicLandType)),
+    let chosen_subtype_kind = match effect.modification {
+        ContinuousModification::AddChosenSubtype { ref kind } => Some(kind),
+        ContinuousModification::SetChosenBasicLandType => Some(&ChosenSubtypeKind::BasicLandType),
         _ => None,
     };
+    let chosen_subtype = chosen_subtype_kind.and_then(|kind| {
+        state
+            .objects
+            .get(&effect.source_id)
+            .and_then(|src| src.chosen_subtype_str(kind))
+    });
 
     // Pre-read chosen color from source (avoids borrow conflict in the loop).
     // Used by `AddChosenColor` (CR 105.3) AND by `AddKeyword` when the keyword
@@ -3651,15 +3651,7 @@ fn apply_continuous_effect_filtered(
             // Abilities granted by other effects are re-added in Layer 6.
             // Intrinsic mana abilities are derived from subtypes in mana_sources.rs.
             ContinuousModification::SetBasicLandType { land_type } => {
-                obj.card_types.subtypes.retain(|s| !is_land_subtype(s));
-                obj.card_types
-                    .subtypes
-                    .push(land_type.as_subtype_str().to_string());
-                Arc::make_mut(&mut obj.abilities).clear();
-                obj.trigger_definitions.clear();
-                obj.replacement_definitions.clear();
-                obj.static_definitions.clear();
-                obj.keywords.clear();
+                set_land_subtype_replacing(obj, land_type.as_subtype_str().to_string());
             }
             // CR 305.7 + CR 305.6: Set the land's subtype to the basic land type
             // chosen by the granting source (Phantasmal Terrain, Convincing
@@ -3672,13 +3664,7 @@ fn apply_continuous_effect_filtered(
             // choice was recorded, this is a no-op.
             ContinuousModification::SetChosenBasicLandType => {
                 if let Some(ref subtype) = chosen_subtype {
-                    obj.card_types.subtypes.retain(|s| !is_land_subtype(s));
-                    obj.card_types.subtypes.push(subtype.clone());
-                    Arc::make_mut(&mut obj.abilities).clear();
-                    obj.trigger_definitions.clear();
-                    obj.replacement_definitions.clear();
-                    obj.static_definitions.clear();
-                    obj.keywords.clear();
+                    set_land_subtype_replacing(obj, subtype.clone());
                 }
             }
             // CR 707.9a: Retain the source's printed trigger on the copy.
@@ -3695,6 +3681,18 @@ fn apply_continuous_effect_filtered(
             }
         }
     }
+}
+
+// CR 305.7: Setting a land subtype replaces old land subtypes and removes the
+// land's rules-text abilities; layer 6 reapplies abilities from other effects.
+fn set_land_subtype_replacing(obj: &mut crate::game::game_object::GameObject, subtype: String) {
+    obj.card_types.subtypes.retain(|s| !is_land_subtype(s));
+    obj.card_types.subtypes.push(subtype);
+    Arc::make_mut(&mut obj.abilities).clear();
+    obj.trigger_definitions.clear();
+    obj.replacement_definitions.clear();
+    obj.static_definitions.clear();
+    obj.keywords.clear();
 }
 
 /// CR 305.6: After layer 4 establishes final land types, derive each land's
