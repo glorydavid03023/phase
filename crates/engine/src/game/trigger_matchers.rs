@@ -4211,6 +4211,15 @@ mod tests {
         };
         assert!(match_play_card(&spell_event, &trigger, source, &state));
 
+        // Copying a spell does not count as playing a card (CR 707.10).
+        let copied_spell = GameEvent::SpellCopied {
+            card_id: CardId(11),
+            controller: PlayerId(0),
+            object_id: ObjectId(11),
+            original_id: ObjectId(10),
+        };
+        assert!(!match_play_card(&copied_spell, &trigger, source, &state));
+
         // Playing a land counts as playing a card (CR 601.1a + CR 701.18b).
         let land = create_object(
             &mut state,

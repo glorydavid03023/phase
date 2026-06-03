@@ -10274,15 +10274,15 @@ fn is_land_play_filter(tf: &TypedFilter) -> bool {
 /// CR 601.1a + CR 701.18b: Parse "whenever/when you play a card" — the
 /// play-a-card trigger subject. A player "plays a card" by playing a land or
 /// casting a spell, so a single `PlayCard` trigger mode covers both events
-/// (Recycle, Null Profusion).
+/// (Recycle, Null Profusion, Jinxed Ring).
 ///
 /// Decomposed into axes (prefix × verb × object) via nom combinators, mirroring
 /// `parse_land_play_trigger_subject`. Returns `Some(())` when the full
 /// "you play a card" subject is present and is followed only by end-of-input or
 /// the effect comma (so "you play a card from your graveyard" does not match).
-/// Restricted to the second-person "you play a card" form, which is the only
-/// printed form of this trigger (the rule is defined from the perspective of
-/// the controller "you").
+/// Restricted to the exact second-person bare-card form. Qualified variants
+/// such as "a player plays a card exiled with ~" need additional linked-card
+/// filtering before they can safely share this parser arm.
 fn parse_play_card_trigger_subject(lower: &str) -> Option<()> {
     let (after_prefix, _) = alt((
         tag::<_, _, OracleError<'_>>("whenever "),
@@ -10292,7 +10292,7 @@ fn parse_play_card_trigger_subject(lower: &str) -> Option<()> {
     .ok()?;
     let (after_verb, _) = pair(
         tag::<_, _, OracleError<'_>>("you "),
-        alt((tag::<_, _, OracleError<'_>>("play "), tag("plays "))),
+        tag::<_, _, OracleError<'_>>("play "),
     )
     .parse(after_prefix)
     .ok()?;
@@ -14363,6 +14363,12 @@ mod tests {
             "expected Draw effect, got {:?}",
             execute.effect
         );
+    }
+
+    #[test]
+    fn trigger_you_plays_a_card_does_not_match_play_card() {
+        let def = parse_trigger_line("Whenever you plays a card, draw a card.", "Malformed");
+        assert_ne!(def.mode, TriggerMode::PlayCard);
     }
 
     #[test]
