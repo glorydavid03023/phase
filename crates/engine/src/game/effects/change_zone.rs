@@ -4,7 +4,8 @@ use crate::game::replacement::{self, ReplacementResult};
 use crate::game::zones;
 use crate::types::ability::{
     ControllerRef, Duration, Effect, EffectError, EffectKind, FilterProp, ResolvedAbility,
-    TargetChoiceTiming, TargetFilter, TargetRef, TargetSelectionMode, TypedFilter,
+    StaticDefinition, TargetChoiceTiming, TargetFilter, TargetRef, TargetSelectionMode,
+    TypedFilter,
 };
 use crate::types::counter::CounterType;
 use crate::types::events::GameEvent;
@@ -19,24 +20,26 @@ use crate::types::zones::Zone;
 /// "[scope] creatures you control enter with an additional [counter] counter on
 /// them" statics contribute to the object that just entered the battlefield.
 ///
-/// Scans every functioning static (battlefield + command-zone emblems) for the
-/// `StaticMode::EntersWithAdditionalCounters` variant and tests each one's
-/// `affected` filter against the entering object, using a `FilterContext`
+/// Scans the static sources that were already functioning before the zone move
+/// for the `StaticMode::EntersWithAdditionalCounters` variant and tests each
+/// one's `affected` filter against the entering object, using a `FilterContext`
 /// anchored at the STATIC's source. Anchoring at the source is what makes the
 /// "Other creatures you control" qualifier exclude the static's own permanent
-/// (`FilterProp::Another` compares the candidate against the context source) —
-/// e.g. Kalain does not grant itself a counter from its own static, while a
-/// second copy of the affected class does receive it.
+/// (`FilterProp::Another` compares the candidate against the context source).
 ///
 /// Returns an aggregated `(CounterType, count)` list so multiple active sources
-/// stack additively (CR 614.13: each replacement applies once). The caller folds
-/// this through the shared `apply_etb_counters` resolver.
+/// stack additively (CR 616.1f: repeat the replacement process until none apply).
+/// The caller folds this through the shared `apply_etb_counters` resolver.
 fn enters_with_additional_counters_for_entry(
     state: &GameState,
     object_id: ObjectId,
+    static_defs: &[(ObjectId, StaticDefinition)],
 ) -> Vec<(CounterType, u32)> {
     let mut additional: Vec<(CounterType, u32)> = Vec::new();
-    for (source_obj, def) in crate::game::functioning_abilities::game_active_statics(state) {
+    for (source_id, def) in static_defs {
+        let Some(source_obj) = state.objects.get(source_id) else {
+            continue;
+        };
         let crate::types::statics::StaticMode::EntersWithAdditionalCounters {
             counter_type,
             count,
@@ -236,6 +239,24 @@ pub(crate) fn deliver_replaced_zone_change(
         ..
     } = event
     {
+        // CR 614.1c: Static replacement effects that modify how an object enters
+        // must already be functioning before that object enters. Snapshot the
+        // definitions before `move_to_zone` so a newly-entered permanent cannot
+        // retroactively supply its own replacement effect.
+        let enters_with_additional_counter_statics: Vec<_> = if to == Zone::Battlefield {
+            crate::game::functioning_abilities::game_active_statics(state)
+                .filter(|(_, def)| {
+                    matches!(
+                        def.mode,
+                        crate::types::statics::StaticMode::EntersWithAdditionalCounters { .. }
+                    )
+                })
+                .map(|(source_obj, def)| (source_obj.id, def.clone()))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         zones::move_to_zone(state, object_id, to, events);
         if to == Zone::Battlefield || from == Zone::Battlefield {
             crate::game::layers::mark_layers_full(state);
@@ -314,7 +335,11 @@ pub(crate) fn deliver_replaced_zone_change(
             // matches the entering object; folded through the shared resolver so
             // counter-doubling replacements (Doubling Season, Hardened Scales)
             // see them too.
-            let additional = enters_with_additional_counters_for_entry(state, object_id);
+            let additional = enters_with_additional_counters_for_entry(
+                state,
+                object_id,
+                &enters_with_additional_counter_statics,
+            );
             if !additional.is_empty() {
                 crate::game::engine_replacement::apply_etb_counters(
                     state,
@@ -1366,11 +1391,13 @@ mod tests {
     };
     use crate::types::actions::GameAction;
     use crate::types::card_type::CoreType;
+    use crate::types::counter::CounterType;
     use crate::types::game_state::ZoneChangeRecord;
     use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::keywords::Keyword;
     use crate::types::player::PlayerId;
     use crate::types::statics::StaticMode;
+    use std::sync::Arc;
 
     fn make_hand_choice_ability(up_to: bool) -> ResolvedAbility {
         ResolvedAbility::new(
@@ -1433,9 +1460,6 @@ mod tests {
     /// +1/+1 counter folded into its entry.
     #[test]
     fn enters_with_additional_counter_from_active_static() {
-        use crate::types::counter::CounterType;
-        use std::sync::Arc;
-
         let mut state = GameState::new_two_player(42);
 
         // Static source (Kalain) on the battlefield, controlled by player 0.
@@ -1521,6 +1545,66 @@ mod tests {
                 .copied(),
             None,
             "the Other-scoped static must not grant the source itself a counter"
+        );
+    }
+
+    /// CR 614.1c: A permanent's "enters with" replacement static only applies
+    /// if it was already functioning before the permanent entered. A creature
+    /// entering from hand must not see its own newly-functioning static after
+    /// `move_to_zone` and grant itself a counter retroactively.
+    #[test]
+    fn entering_creature_does_not_apply_its_own_enter_static() {
+        let mut state = GameState::new_two_player(42);
+        let entering = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Self Static Creature".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&entering).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            let def = StaticDefinition::new(StaticMode::EntersWithAdditionalCounters {
+                counter_type: CounterType::Plus1Plus1,
+                count: 1,
+            })
+            .affected(TargetFilter::Typed(
+                TypedFilter::creature().controller(ControllerRef::You),
+            ));
+            obj.static_definitions.push(def.clone());
+            Arc::make_mut(&mut obj.base_static_definitions).push(def);
+        }
+
+        let ability = ResolvedAbility::new(
+            Effect::ChangeZone {
+                origin: Some(Zone::Hand),
+                destination: Zone::Battlefield,
+                target: TargetFilter::Any,
+                owner_library: false,
+                enter_transformed: false,
+                enters_under: None,
+                enter_tapped: false,
+                enters_attacking: false,
+                up_to: false,
+                enter_with_counters: vec![],
+            },
+            vec![TargetRef::Object(entering)],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert!(state.battlefield.contains(&entering));
+        assert_eq!(
+            state.objects[&entering]
+                .counters
+                .get(&CounterType::Plus1Plus1)
+                .copied(),
+            None,
+            "entering creature must not apply its own newly-functioning static, got {:?}",
+            state.objects[&entering].counters
         );
     }
 

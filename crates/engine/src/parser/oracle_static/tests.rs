@@ -8,6 +8,9 @@ use crate::types::ability::{
     AggregateFunction, CardTypeSetSource, CountScope, Duration, Effect, ObjectProperty,
     PlayerScope, PtStat, PtValueScope, SharedQuality, SharedQualityRelation, TypeFilter, ZoneRef,
 };
+use crate::types::counter::CounterType;
+use crate::types::keywords::Keyword;
+use crate::types::mana::ManaCost;
 
 /// CR 702.16 + CR 609.6: Serra's Emissary's compound-subject keyword grant
 /// "You and creatures you control have protection from the chosen card
@@ -12548,7 +12551,6 @@ fn static_line_lovisa_coldeyes() {
 /// creature affected filter.
 #[test]
 fn enters_with_additional_counter_other_creatures() {
-    use crate::types::counter::CounterType;
     let def = parse_static_line(
         "Other creatures you control enter with an additional +1/+1 counter on them.",
     )
@@ -12583,7 +12585,6 @@ fn enters_with_additional_counter_other_creatures() {
 /// qualifier on the affected filter (no "Other" exclusion).
 #[test]
 fn enters_with_additional_counter_legendary_creatures() {
-    use crate::types::counter::CounterType;
     let def = parse_static_line(
         "Legendary creatures you control enter with an additional +1/+1 counter on them.",
     )
@@ -12628,4 +12629,187 @@ fn enters_with_dynamic_count_not_matched_as_fixed() {
             def.mode
         );
     }
+}
+
+/// CR 205.3 + CR 604.1 + CR 702.18a: "All Slivers have shroud." (Crystalline
+/// Sliver) must land as a TOP-LEVEL continuous static granting Shroud to a
+/// `Typed(Subtype:"Sliver")` subject — NOT a spell-resolution GenericEffect.
+/// The "all " universal quantifier on the rule-static subject must be stripped
+/// and delegated to `parse_type_phrase`.
+#[test]
+fn static_all_slivers_have_shroud_top_level_typed_subtype() {
+    let def =
+        parse_static_line("All Slivers have shroud.").expect("All Slivers have shroud must parse");
+    assert_eq!(def.mode, StaticMode::Continuous);
+    match &def.affected {
+        Some(TargetFilter::Typed(tf)) => {
+            assert_eq!(
+                tf.get_subtype(),
+                Some("Sliver"),
+                "expected Subtype(Sliver), got {:?}",
+                tf.type_filters
+            );
+        }
+        other => panic!("expected Typed(Subtype:Sliver), got {other:?}"),
+    }
+    assert!(
+        def.modifications
+            .contains(&ContinuousModification::AddKeyword {
+                keyword: Keyword::Shroud,
+            }),
+        "expected AddKeyword(Shroud), got {:?}",
+        def.modifications
+    );
+}
+
+/// CR 205.3 + CR 604.1 + CR 702.11a: "All Goblins have hexproof." — same
+/// universal-quantifier-strip path, different subtype + keyword, proving the
+/// fix covers the whole "all <type> have <keyword>" class, not one card.
+#[test]
+fn static_all_goblins_have_hexproof_top_level_typed_subtype() {
+    let def = parse_static_line("All Goblins have hexproof.")
+        .expect("All Goblins have hexproof must parse");
+    assert_eq!(def.mode, StaticMode::Continuous);
+    match &def.affected {
+        Some(TargetFilter::Typed(tf)) => {
+            assert_eq!(tf.get_subtype(), Some("Goblin"));
+        }
+        other => panic!("expected Typed(Subtype:Goblin), got {other:?}"),
+    }
+    assert!(def
+        .modifications
+        .contains(&ContinuousModification::AddKeyword {
+            keyword: Keyword::Hexproof,
+        }));
+}
+
+/// CR 205.3 + CR 604.1: "All creatures have shroud." — proves the quantifier
+/// strip is GENERAL (works on the core-type subject "creatures", not just
+/// subtypes).
+#[test]
+fn static_all_creatures_have_shroud_top_level() {
+    let def = parse_static_line("All creatures have shroud.")
+        .expect("All creatures have shroud must parse");
+    assert_eq!(def.mode, StaticMode::Continuous);
+    match &def.affected {
+        Some(TargetFilter::Typed(tf)) => {
+            assert!(
+                tf.type_filters.contains(&TypeFilter::Creature),
+                "expected Creature type filter, got {:?}",
+                tf.type_filters
+            );
+        }
+        other => panic!("expected Typed(creatures), got {other:?}"),
+    }
+    assert!(def
+        .modifications
+        .contains(&ContinuousModification::AddKeyword {
+            keyword: Keyword::Shroud,
+        }));
+}
+
+/// CR 509.1b + CR 604.1: A self-referential "~ can't be blocked except by
+/// <quality filter>" evasion static must land as a TOP-LEVEL
+/// `CantBeBlockedExceptBy { Quality(..) }` on the source — NOT a GenericEffect.
+#[test]
+fn static_selfref_cant_be_blocked_except_by_quality_top_level() {
+    let def = parse_static_line("~ can't be blocked except by creatures with flying.")
+        .expect("self-ref except-by-quality must parse");
+    assert_eq!(def.affected, Some(TargetFilter::SelfRef));
+    match &def.mode {
+        StaticMode::CantBeBlockedExceptBy {
+            kind: BlockExceptionKind::Quality(filter),
+        } => match filter {
+            TargetFilter::Typed(tf) => assert!(
+                tf.type_filters.contains(&TypeFilter::Creature),
+                "expected a creature quality filter, got {:?}",
+                tf.type_filters
+            ),
+            other => panic!("expected a Typed creature quality filter, got {other:?}"),
+        },
+        other => panic!("expected CantBeBlockedExceptBy(Quality), got {other:?}"),
+    }
+}
+
+/// CR 509.1b: A self-referential "~ can't be blocked except by two or more
+/// creatures" (menace-style minimum) must land as a TOP-LEVEL
+/// `CantBeBlockedExceptBy { MinBlockers }` static.
+#[test]
+fn static_selfref_cant_be_blocked_except_by_min_blockers_top_level() {
+    let def = parse_static_line("~ can't be blocked except by two or more creatures.")
+        .expect("self-ref except-by-min must parse");
+    assert_eq!(def.affected, Some(TargetFilter::SelfRef));
+    assert_eq!(
+        def.mode,
+        StaticMode::CantBeBlockedExceptBy {
+            kind: BlockExceptionKind::MinBlockers { min: 2 }
+        }
+    );
+}
+
+/// CR 509.1b: The Amrou-style disjunction filter ("artifact creatures and/or
+/// white creatures") must land as a TOP-LEVEL `CantBeBlockedExceptBy { Quality }`
+/// evasion static on the self-referential source.
+#[test]
+fn static_selfref_cant_be_blocked_except_by_disjunction_top_level() {
+    let def = parse_static_line(
+        "~ can't be blocked except by artifact creatures and/or white creatures.",
+    )
+    .expect("self-ref except-by-disjunction must parse");
+    assert_eq!(def.affected, Some(TargetFilter::SelfRef));
+    assert!(
+        matches!(
+            def.mode,
+            StaticMode::CantBeBlockedExceptBy {
+                kind: BlockExceptionKind::Quality(_)
+            }
+        ),
+        "expected CantBeBlockedExceptBy(Quality(disjunction)), got {:?}",
+        def.mode
+    );
+}
+
+/// CR 702.29e + CR 113.6b: Homing Sliver's top-level static grants Typecycling
+/// to all Sliver cards in their owner's hand. This asserts the PARSE is correct
+/// (affected = Typed(Subtype:Sliver) in the Hand zone; modification =
+/// AddKeyword(Typecycling { cost {3}, subtype "Sliver" })). NOTE: a deferred
+/// RUNTIME gap remains — `synthesize_cycling` reads intrinsic printed keywords
+/// only, so a Typecycling keyword GRANTED at runtime is on the recipient's
+/// keyword set but is not synthesized into an activatable ability. See the
+/// doc comment at `database/synthesis.rs::synthesize_cycling`.
+#[test]
+fn static_homing_sliver_grants_typecycling_to_slivers_in_hand() {
+    // Real Oracle text. The "Each <type> in each player's hand has <keyword>"
+    // shape must land as a TOP-LEVEL continuous grant, not a GenericEffect.
+    let def = parse_static_line("Each Sliver card in each player's hand has slivercycling {3}.")
+        .expect("Homing Sliver slivercycling grant must parse");
+    assert_eq!(def.mode, StaticMode::Continuous);
+    match &def.affected {
+        Some(filter @ TargetFilter::Typed(tf)) => {
+            assert_eq!(
+                tf.get_subtype(),
+                Some("Sliver"),
+                "expected Subtype(Sliver), got {:?}",
+                tf.type_filters
+            );
+            // CR 113.6b: the grant functions on cards in the Hand zone.
+            assert_eq!(
+                filter.extract_in_zone(),
+                Some(Zone::Hand),
+                "expected InZone(Hand) on the affected filter, got {:?}",
+                tf.properties
+            );
+        }
+        other => panic!("expected Typed(Subtype:Sliver in hand), got {other:?}"),
+    }
+    assert!(
+        def.modifications.iter().any(|m| matches!(
+            m,
+            ContinuousModification::AddKeyword {
+                keyword: Keyword::Typecycling { cost, subtype }
+            } if *cost == ManaCost::generic(3) && subtype == "Sliver"
+        )),
+        "expected AddKeyword(Typecycling {{ {{3}}, Sliver }}), got {:?}",
+        def.modifications
+    );
 }
