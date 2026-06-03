@@ -3458,6 +3458,49 @@ fn quoted_ability_sacrifice_cost_separator() {
 }
 
 #[test]
+fn quoted_ability_preserves_activation_restrictions() {
+    use crate::types::ability::ActivationRestriction;
+
+    // CR 602.5c: A granted activated ability carrying a trailing use
+    // restriction inside its quoted text must surface that restriction on the
+    // acquired ability — not drop it as an unparsed sentence. CR 602.5d:
+    // "Activate only as a sorcery" → AsSorcery timing gate. This is the path
+    // for Skygames ("Enchanted land has \"{T}: ... Activate only as a
+    // sorcery.\""), Mindwhip Sliver, and Squirrel anthem cards.
+    let def = parse_quoted_ability("{T}: Draw a card. Activate only as a sorcery.");
+    assert_eq!(def.kind, AbilityKind::Activated);
+    assert!(def.cost.is_some(), "should retain the tap cost");
+    assert!(
+        def.sorcery_speed,
+        "AsSorcery must set sorcery_speed on the granted ability"
+    );
+    assert!(
+        def.activation_restrictions
+            .contains(&ActivationRestriction::AsSorcery),
+        "granted ability must carry AsSorcery, got {:?}",
+        def.activation_restrictions
+    );
+    assert!(
+        !matches!(
+            *def.effect,
+            crate::types::ability::Effect::Unimplemented { .. }
+        ),
+        "the draw effect must still parse, got {:?}",
+        def.effect
+    );
+
+    // CR 602.5b: "Activate only once each turn" is equally a use restriction —
+    // the same single-authority extractor must surface it on the granted copy.
+    let once = parse_quoted_ability("{T}: Draw a card. Activate only once each turn.");
+    assert!(
+        once.activation_restrictions
+            .contains(&ActivationRestriction::OnlyOnceEachTurn),
+        "granted ability must carry OnlyOnceEachTurn, got {:?}",
+        once.activation_restrictions
+    );
+}
+
+#[test]
 fn quoted_self_rule_static_grants_static_mode() {
     let modifications = parse_quoted_ability_modifications(
         "It gains \"This creature attacks each combat if able.\"",
