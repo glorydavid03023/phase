@@ -7890,6 +7890,19 @@ fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefiniti
         return Some((TriggerMode::Cycled, def));
     }
 
+    // CR 601.1a + CR 701.18b: "whenever you play a card" — playing a card means
+    // playing it as a land OR casting it as a spell, so this fires on both
+    // events. A single `PlayCard` trigger mode (Recycle, Null Profusion) covers
+    // both via `match_play_card`. Matched before the land-play arm; the
+    // "a card" object cannot match the land-play helper's "a land"/"another land"
+    // object, so neither shadows the other.
+    if parse_play_card_trigger_subject(lower).is_some() {
+        let mut def = make_base();
+        def.mode = TriggerMode::PlayCard;
+        def.valid_target = Some(TargetFilter::Controller);
+        return Some((TriggerMode::PlayCard, def));
+    }
+
     // CR 305.1 + CR 603.2 + CR 701.18a: "whenever [X] plays/play a land
     // [from <zone>]" fires on the CR 305 special action. Handles both the
     // third-person "plays a land" form (a player, an opponent) and the
@@ -10250,6 +10263,43 @@ fn parse_land_play_trigger_subject(
     .parse(after_verb)
     .ok()?;
     Some((valid_target, qualifier, after_land))
+}
+
+/// CR 601.1a + CR 701.18b: Parse "whenever/when you play a card" — the
+/// play-a-card trigger subject. A player "plays a card" by playing a land or
+/// casting a spell, so a single `PlayCard` trigger mode covers both events
+/// (Recycle, Null Profusion).
+///
+/// Decomposed into axes (prefix × verb × object) via nom combinators, mirroring
+/// `parse_land_play_trigger_subject`. Returns `Some(())` when the full
+/// "you play a card" subject is present and is followed only by end-of-input or
+/// the effect comma (so "you play a card from your graveyard" does not match).
+/// Restricted to the second-person "you play a card" form, which is the only
+/// printed form of this trigger (the rule is defined from the perspective of
+/// the controller "you").
+fn parse_play_card_trigger_subject(lower: &str) -> Option<()> {
+    let (after_prefix, _) = alt((
+        tag::<_, _, OracleError<'_>>("whenever "),
+        tag::<_, _, OracleError<'_>>("when "),
+    ))
+    .parse(lower)
+    .ok()?;
+    let (after_verb, _) = pair(
+        tag::<_, _, OracleError<'_>>("you "),
+        alt((tag::<_, _, OracleError<'_>>("play "), tag("plays "))),
+    )
+    .parse(after_prefix)
+    .ok()?;
+    let (after_card, _) = tag::<_, _, OracleError<'_>>("a card")
+        .parse(after_verb)
+        .ok()?;
+    // The subject must be the whole condition: either end-of-input, or the
+    // effect comma ("..., draw a card.") follows directly. `eof` / `tag(",")`
+    // reject any further qualifier text.
+    alt((value((), eof), value((), tag::<_, _, OracleError<'_>>(","))))
+        .parse(after_card)
+        .ok()?;
+    Some(())
 }
 
 /// CR 725.1: Parse "whenever/when [subject] become(s) the monarch" trigger.
@@ -14267,6 +14317,25 @@ mod tests {
         assert_eq!(def.valid_target, Some(TargetFilter::Controller));
         // No origin clause → no zone restriction (CR 601.2a).
         assert_eq!(def.spell_cast_origin, OriginConstraint::Any);
+    }
+
+    // CR 601.1a + CR 701.18b: "Whenever you play a card" fires on playing a land
+    // or casting a spell. Recycle and Null Profusion both read "Whenever you play
+    // a card, draw a card." — classify as the unified `PlayCard` mode.
+    #[test]
+    fn trigger_you_play_a_card_draw() {
+        let def = parse_trigger_line("Whenever you play a card, draw a card.", "Recycle");
+        assert_eq!(def.mode, TriggerMode::PlayCard);
+        // "you" → controller-scoped.
+        assert_eq!(def.valid_target, Some(TargetFilter::Controller));
+        // No card-type restriction — any card played.
+        assert!(def.valid_card.is_none());
+        let execute = def.execute.as_ref().expect("trigger should have an effect");
+        assert!(
+            matches!(*execute.effect, Effect::Draw { .. }),
+            "expected Draw effect, got {:?}",
+            execute.effect
+        );
     }
 
     #[test]
