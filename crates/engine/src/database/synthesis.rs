@@ -292,6 +292,12 @@ impl KeywordTriggerInstaller {
             // CR 702.70a: Poisonous N — a combat-damage-to-player trigger.
             // CR 702.70b: each Poisonous instance triggers separately (one trigger per instance).
             Keyword::Poisonous(n) => vec![build_poisonous_trigger(*n)],
+            // CR 702.115a: Ingest — a combat-damage-to-player trigger.
+            // CR 702.115b: each Ingest instance triggers separately (one trigger per instance).
+            Keyword::Ingest => vec![build_ingest_trigger()],
+            // CR 702.69a: Gravestorm — a stack-functioning spell-cast copy
+            // trigger. CR 702.69b: each Gravestorm instance triggers separately.
+            Keyword::Gravestorm => vec![build_gravestorm_trigger()],
             // CR 702.32a + CR 604.1: granted Fading carries the upkeep
             // counter-removal / "if you can't, sacrifice" trigger. The
             // ETB-with-N-fade-counters replacement (CR 702.32a clause 1) is a
@@ -368,6 +374,10 @@ impl KeywordTriggerInstaller {
             Keyword::Training => is_training_trigger(trigger),
             // CR 702.70a + CR 604.1: symmetric removal for granted Poisonous.
             Keyword::Poisonous(n) => is_poisonous_trigger(trigger, *n),
+            // CR 702.115a + CR 604.1: symmetric removal for granted Ingest.
+            Keyword::Ingest => is_ingest_trigger(trigger),
+            // CR 702.69a + CR 604.1: symmetric removal for granted Gravestorm.
+            Keyword::Gravestorm => is_gravestorm_trigger(trigger),
             // CR 702.32a + CR 604.1: symmetric removal — `RemoveKeyword` strips
             // the granted Fading trigger when the granted keyword is removed.
             Keyword::Fading(_) => is_fading_upkeep_trigger(trigger),
@@ -2004,6 +2014,90 @@ pub fn synthesize_replicate(face: &mut CardFace) {
                     .to_string(),
             ),
     );
+}
+
+/// CR 702.69a: The `AbilityDefinition` produced by a Gravestorm trigger — a
+/// self-referential `CopySpell` repeated once for each permanent put into a
+/// graveyard from the battlefield this turn. Mirrors
+/// `replicate_copy_ability_definition` but drives `repeat_for` off the
+/// battlefield-to-graveyard zone-change count (CR 702.69a) rather than the
+/// additional-cost payment count, and carries no intervening-if.
+pub fn gravestorm_copy_ability_definition() -> AbilityDefinition {
+    let mut def = AbilityDefinition::new(
+        AbilityKind::Spell,
+        // CR 702.69a + CR 707.10c: "If the spell has any targets, you may
+        // choose new targets for any of the copies."
+        Effect::CopySpell {
+            target: TargetFilter::SelfRef,
+            retarget: CopyRetargetPermission::MayChooseNewTargets,
+        },
+    );
+    // CR 702.69a: "copy it for each permanent that was put into a graveyard from
+    // the battlefield this turn." The count drives N `CopySpell` iterations.
+    def.repeat_for = Some(QuantityExpr::Ref {
+        qty: QuantityRef::ZoneChangeCountThisTurn {
+            from: Some(Zone::Battlefield),
+            to: Some(Zone::Graveyard),
+            filter: TargetFilter::Typed(TypedFilter::permanent()),
+        },
+    });
+    def
+}
+
+/// CR 702.69a: A Gravestorm trigger — a self-referential `SpellCast` copy
+/// trigger that functions on the stack and whose copy count is the
+/// battlefield-to-graveyard zone-change count this turn.
+fn is_gravestorm_trigger(t: &TriggerDefinition) -> bool {
+    matches!(t.mode, TriggerMode::SpellCast)
+        && matches!(t.valid_card, Some(TargetFilter::SelfRef))
+        && t.trigger_zones.contains(&Zone::Stack)
+        && t.execute.as_deref().is_some_and(|a| {
+            matches!(
+                &*a.effect,
+                Effect::CopySpell {
+                    target: TargetFilter::SelfRef,
+                    retarget: CopyRetargetPermission::MayChooseNewTargets,
+                }
+            ) && a.repeat_for.as_ref().is_some_and(|repeat_for| {
+                matches!(
+                    repeat_for,
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::ZoneChangeCountThisTurn {
+                            from: Some(Zone::Battlefield),
+                            to: Some(Zone::Graveyard),
+                            filter,
+                        }
+                    } if *filter == TargetFilter::Typed(TypedFilter::permanent())
+                )
+            })
+        })
+}
+
+/// CR 702.69a: Build one Gravestorm trigger — "when you cast this spell, copy
+/// it for each permanent that was put into a graveyard from the battlefield
+/// this turn." CR 702.69b: multiple Gravestorm instances trigger separately.
+fn build_gravestorm_trigger() -> TriggerDefinition {
+    TriggerDefinition::new(TriggerMode::SpellCast)
+        .valid_card(TargetFilter::SelfRef)
+        .trigger_zones(vec![Zone::Stack])
+        .execute(gravestorm_copy_ability_definition())
+        .description(
+            "CR 702.69a: Gravestorm — when you cast this spell, copy it for each permanent \
+             put into a graveyard from the battlefield this turn."
+                .to_string(),
+        )
+}
+
+/// CR 702.69a: Synthesize Gravestorm into "when you cast this spell" copy
+/// triggers that function on the stack and copy the spell once for each
+/// permanent put into a graveyard from the battlefield this turn.
+///
+/// Build-for-the-class: keyed entirely on `Keyword::Gravestorm`, so every
+/// printed Gravestorm card flows through this one synthesizer. CR 702.69b says
+/// each Gravestorm instance triggers separately, which `install_matching`
+/// preserves while keeping repeated synthesis idempotent.
+pub fn synthesize_gravestorm(face: &mut CardFace) {
+    KeywordTriggerInstaller::install_matching(face, |kw| matches!(kw, Keyword::Gravestorm));
 }
 
 /// CR 702.42a: Synthesize Entwine cost onto modal spell's ModalChoice.
@@ -4225,6 +4319,57 @@ fn is_poisonous_trigger(t: &TriggerDefinition, n: u32) -> bool {
                 target: TargetFilter::TriggeringPlayer,
             }) if *value == n as i32
         )
+}
+
+/// CR 702.115a: Ingest — "Whenever this creature deals combat damage to a
+/// player, that player exiles the top card of their library." Each instance
+/// triggers separately (CR 702.115b), so one trigger is synthesized per
+/// `Keyword::Ingest` instance.
+fn build_ingest_trigger() -> TriggerDefinition {
+    let exile = Effect::ExileTop {
+        player: TargetFilter::TriggeringPlayer,
+        count: QuantityExpr::Fixed { value: 1 },
+        face_down: false,
+    };
+    let execute = AbilityDefinition::new(AbilityKind::Spell, exile).description(
+        "CR 702.115a: Ingest — that player exiles the top card of their library".to_string(),
+    );
+    TriggerDefinition::new(TriggerMode::DamageDone)
+        .damage_kind(DamageKindFilter::CombatOnly)
+        .valid_source(TargetFilter::SelfRef)
+        .valid_target(TargetFilter::Player)
+        .execute(execute)
+        .description(
+            "CR 702.115a: Ingest — whenever this creature deals combat damage to a player, \
+             that player exiles the top card of their library."
+                .to_string(),
+        )
+}
+
+/// CR 702.115a: An Ingest trigger — a source-scoped combat-damage-to-player
+/// trigger that exiles the top card of the damaged player's library. Used by
+/// `RemoveKeyword` symmetric removal so a granted-then-removed Ingest strips
+/// exactly its own trigger.
+fn is_ingest_trigger(t: &TriggerDefinition) -> bool {
+    matches!(t.mode, TriggerMode::DamageDone)
+        && matches!(t.damage_kind, DamageKindFilter::CombatOnly)
+        && matches!(t.valid_source, Some(TargetFilter::SelfRef))
+        && matches!(t.valid_target, Some(TargetFilter::Player))
+        && matches!(
+            t.execute.as_deref().map(|a| &*a.effect),
+            Some(Effect::ExileTop {
+                player: TargetFilter::TriggeringPlayer,
+                count: QuantityExpr::Fixed { value: 1 },
+                face_down: false,
+            })
+        )
+}
+
+/// CR 702.115a: Synthesize Ingest into a combat-damage-to-player trigger that
+/// exiles the top card of the damaged player's library. CR 702.115b: multiple
+/// Ingest instances trigger separately.
+pub fn synthesize_ingest(face: &mut CardFace) {
+    KeywordTriggerInstaller::install_matching(face, |kw| matches!(kw, Keyword::Ingest));
 }
 
 /// CR 702.101a: Extort — "Whenever you cast a spell, you may pay {W/B}.
@@ -6937,6 +7082,9 @@ pub fn synthesize_all(face: &mut CardFace) {
     // CR 702.56a: Replicate — repeatable optional additional cost + SpellCast
     // copy trigger that makes one copy per replicate payment.
     synthesize_replicate(face);
+    // CR 702.69a: Gravestorm — copy this spell for each permanent put into a
+    // graveyard from the battlefield this turn.
+    synthesize_gravestorm(face);
     synthesize_entwine(face);
     synthesize_madness_intrinsics(face);
     synthesize_evoke(face);
@@ -7011,6 +7159,9 @@ pub fn synthesize_all(face: &mut CardFace) {
     // cost to return this card from your graveyard to your hand; otherwise
     // exile it.
     synthesize_recover(face);
+    // CR 702.115a: Ingest — combat-damage-to-player trigger that exiles the top
+    // card of the damaged player's library.
+    synthesize_ingest(face);
     // CR 702.100a: Evolve — ETB trigger that puts a +1/+1 counter on the
     // creature whenever another creature you control enters with greater power
     // or toughness. CR 702.100d: each instance triggers separately.
@@ -19715,6 +19866,215 @@ mod afflict_training_poisonous_synthesis_tests {
                 "{kw:?} must synthesize one trigger (was a silent no-op)"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod ingest_gravestorm_synthesis_tests {
+    //! CR 702.115a/b (Ingest) and CR 702.69a/b (Gravestorm) shape tests for
+    //! printed keyword synthesis plus runtime-grant trigger installation.
+    use super::*;
+
+    #[test]
+    fn ingest_synthesizes_combat_damage_exile() {
+        let triggers = KeywordTriggerInstaller::triggers_for(&Keyword::Ingest);
+        assert_eq!(triggers.len(), 1, "CR 702.115b: one trigger per Ingest");
+        let t = &triggers[0];
+        assert!(matches!(t.mode, TriggerMode::DamageDone));
+        assert!(
+            matches!(t.damage_kind, DamageKindFilter::CombatOnly),
+            "CR 702.115a: only combat damage triggers Ingest"
+        );
+        assert!(matches!(t.valid_source, Some(TargetFilter::SelfRef)));
+        assert!(
+            matches!(t.valid_target, Some(TargetFilter::Player)),
+            "CR 702.115a: combat damage must be dealt to a player"
+        );
+
+        let effect = &*t.execute.as_deref().expect("execute body").effect;
+        let Effect::ExileTop {
+            player,
+            count,
+            face_down,
+        } = effect
+        else {
+            panic!("Ingest must exile the top card, got {effect:?}");
+        };
+        assert!(
+            matches!(player, TargetFilter::TriggeringPlayer),
+            "CR 702.115a: the damaged player exiles the card"
+        );
+        assert!(matches!(count, QuantityExpr::Fixed { value: 1 }));
+        assert!(!face_down, "CR 406.3: Ingest exiles face up by default");
+    }
+
+    #[test]
+    fn ingest_printed_keyword_synthesizes_trigger() {
+        let mut face = CardFace {
+            keywords: vec![Keyword::Ingest],
+            ..CardFace::default()
+        };
+        synthesize_ingest(&mut face);
+
+        assert_eq!(
+            face.triggers
+                .iter()
+                .filter(|trigger| is_ingest_trigger(trigger))
+                .count(),
+            1,
+            "printed Ingest must synthesize its combat-damage trigger"
+        );
+    }
+
+    #[test]
+    fn ingest_preserves_multiple_instances() {
+        let mut face = CardFace {
+            keywords: vec![Keyword::Ingest, Keyword::Ingest],
+            ..CardFace::default()
+        };
+        synthesize_ingest(&mut face);
+        synthesize_ingest(&mut face);
+
+        assert_eq!(
+            face.triggers
+                .iter()
+                .filter(|trigger| is_ingest_trigger(trigger))
+                .count(),
+            2,
+            "CR 702.115b: two Ingest instances trigger separately"
+        );
+    }
+
+    #[test]
+    fn ingest_matcher_roundtrips_and_is_distinct_from_renown() {
+        let ingest = KeywordTriggerInstaller::triggers_for(&Keyword::Ingest);
+        let renown = KeywordTriggerInstaller::triggers_for(&Keyword::Renown(1));
+
+        assert!(KeywordTriggerInstaller::trigger_matches_keyword_kind(
+            &ingest[0],
+            &Keyword::Ingest
+        ));
+        assert!(!KeywordTriggerInstaller::trigger_matches_keyword_kind(
+            &ingest[0],
+            &Keyword::Renown(1)
+        ));
+        assert!(!KeywordTriggerInstaller::trigger_matches_keyword_kind(
+            &renown[0],
+            &Keyword::Ingest
+        ));
+    }
+
+    #[test]
+    fn synthesize_all_wires_printed_ingest_and_gravestorm() {
+        let mut face = CardFace {
+            keywords: vec![Keyword::Ingest, Keyword::Gravestorm],
+            ..CardFace::default()
+        };
+        synthesize_all(&mut face);
+
+        assert_eq!(
+            face.triggers
+                .iter()
+                .filter(|trigger| is_ingest_trigger(trigger))
+                .count(),
+            1,
+            "synthesize_all must install printed Ingest triggers"
+        );
+        assert_eq!(
+            face.triggers
+                .iter()
+                .filter(|trigger| is_gravestorm_trigger(trigger))
+                .count(),
+            1,
+            "synthesize_all must install printed Gravestorm triggers"
+        );
+    }
+
+    #[test]
+    fn gravestorm_synthesizes_zone_counted_copy_trigger() {
+        let mut face = CardFace {
+            keywords: vec![Keyword::Gravestorm],
+            ..CardFace::default()
+        };
+        synthesize_gravestorm(&mut face);
+
+        let trigger = face
+            .triggers
+            .iter()
+            .find(|trigger| is_gravestorm_trigger(trigger))
+            .expect("printed Gravestorm must synthesize a copy trigger");
+        assert!(matches!(trigger.mode, TriggerMode::SpellCast));
+        assert!(matches!(trigger.valid_card, Some(TargetFilter::SelfRef)));
+        assert!(
+            trigger.trigger_zones.contains(&Zone::Stack),
+            "CR 702.69a: Gravestorm functions while the spell is on the stack"
+        );
+
+        let execute = trigger.execute.as_deref().expect("execute body");
+        assert!(matches!(
+            &*execute.effect,
+            Effect::CopySpell {
+                target: TargetFilter::SelfRef,
+                retarget: CopyRetargetPermission::MayChooseNewTargets,
+            }
+        ));
+        assert!(matches!(
+            execute.repeat_for.as_ref(),
+            Some(QuantityExpr::Ref {
+                qty: QuantityRef::ZoneChangeCountThisTurn {
+                    from: Some(Zone::Battlefield),
+                    to: Some(Zone::Graveyard),
+                    filter,
+                }
+            }) if *filter == TargetFilter::Typed(TypedFilter::permanent())
+        ));
+    }
+
+    #[test]
+    fn gravestorm_preserves_multiple_instances() {
+        let mut face = CardFace {
+            keywords: vec![Keyword::Gravestorm, Keyword::Gravestorm],
+            ..CardFace::default()
+        };
+        synthesize_gravestorm(&mut face);
+
+        assert_eq!(
+            face.triggers
+                .iter()
+                .filter(|trigger| is_gravestorm_trigger(trigger))
+                .count(),
+            2,
+            "CR 702.69b: two Gravestorm instances trigger separately"
+        );
+    }
+
+    #[test]
+    fn gravestorm_is_idempotent() {
+        let mut face = CardFace {
+            keywords: vec![Keyword::Gravestorm, Keyword::Gravestorm],
+            ..CardFace::default()
+        };
+        synthesize_gravestorm(&mut face);
+        synthesize_gravestorm(&mut face);
+
+        assert_eq!(
+            face.triggers
+                .iter()
+                .filter(|trigger| is_gravestorm_trigger(trigger))
+                .count(),
+            2,
+            "re-running synthesis must not duplicate Gravestorm triggers"
+        );
+    }
+
+    #[test]
+    fn gravestorm_noop_without_keyword() {
+        let mut face = CardFace {
+            keywords: vec![Keyword::Flying],
+            ..CardFace::default()
+        };
+        synthesize_gravestorm(&mut face);
+        assert!(face.triggers.is_empty());
     }
 }
 
