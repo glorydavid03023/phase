@@ -2404,6 +2404,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         | Effect::Investigate
         | Effect::BecomeMonarch
         | Effect::Proliferate
+        | Effect::ProliferateTarget { .. }
         | Effect::EndTheTurn
         | Effect::EndCombatPhase
         | Effect::SolveCase

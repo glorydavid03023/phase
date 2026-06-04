@@ -5943,6 +5943,16 @@ pub enum Effect {
     /// CR 725.1: Become the monarch. Sets GameState::monarch to the controller.
     BecomeMonarch,
     Proliferate,
+    /// CR 701.34a (operation) + CR 122.1: "For each kind of counter on target
+    /// permanent or player, give that permanent or player another counter of
+    /// that kind." This is the proliferate counter-add operation, but forced on
+    /// a single chosen target rather than a player-chosen set — so it carries a
+    /// `target` and runs without a `ProliferateChoice` prompt. Skyship
+    /// Plunderer, Maulfist Revolutionary, Fuel for the Cause.
+    ProliferateTarget {
+        #[serde(default = "default_target_filter_any")]
+        target: TargetFilter,
+    },
     /// CR 701.36a: Choose a creature token you control, then create a copy of it.
     Populate,
     /// CR 701.30: Clash with an opponent — reveal top cards, compare mana values.
@@ -8032,6 +8042,7 @@ impl Effect {
             | Effect::SetLifeTotal { target, .. }
             | Effect::GiveControl { target, .. }
             | Effect::RemoveFromCombat { target, .. }
+            | Effect::ProliferateTarget { target, .. }
             // CR 115.7 + CR 115.1: "Change the target of target spell or ability"
             // (Bolt Bend, Redirect, Misdirection) targets the stack spell/ability
             // it will retarget. That target is chosen as the spell is cast (CR
@@ -8295,6 +8306,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::TimeTravel => "TimeTravel",
         Effect::BecomeMonarch => "BecomeMonarch",
         Effect::Proliferate => "Proliferate",
+        Effect::ProliferateTarget { .. } => "ProliferateTarget",
         Effect::EndTheTurn => "EndTheTurn",
         Effect::EndCombatPhase => "EndCombatPhase",
         Effect::Populate => "Populate",
@@ -8481,6 +8493,7 @@ pub enum EffectKind {
     TimeTravel,
     BecomeMonarch,
     Proliferate,
+    ProliferateTarget,
     Populate,
     Clash,
     EndTheTurn,
@@ -8670,6 +8683,7 @@ impl From<&Effect> for EffectKind {
             Effect::TimeTravel => EffectKind::TimeTravel,
             Effect::BecomeMonarch => EffectKind::BecomeMonarch,
             Effect::Proliferate => EffectKind::Proliferate,
+            Effect::ProliferateTarget { .. } => EffectKind::ProliferateTarget,
             Effect::EndTheTurn => EffectKind::EndTheTurn,
             Effect::EndCombatPhase => EffectKind::EndCombatPhase,
             Effect::Populate => EffectKind::Populate,
