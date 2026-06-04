@@ -391,9 +391,15 @@ pub(crate) enum ImperativeFamilyAst {
     Connive,
     /// CR 509.1g: Block this turn if able.
     ForceBlock,
-    /// CR 508.1d: Attack the source controller this turn/combat if able.
+    /// CR 508.1d: Attack a required player this turn/combat if able. The
+    /// `required_player` filter selects whom the forced attacker must attack —
+    /// `TargetFilter::Controller` for "attacks you", or
+    /// `TargetFilter::SourceChosenPlayer` for "attacks that player" (the
+    /// opponent persisted on the source by a preceding "choose an opponent"
+    /// step, e.g. Ruhan of the Fomori).
     ForceAttack {
         duration: Duration,
+        required_player: TargetFilter,
     },
     /// CR 701.15a: Goad target creature.
     Goad,
