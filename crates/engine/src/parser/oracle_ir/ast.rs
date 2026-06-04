@@ -400,9 +400,9 @@ pub(crate) enum ImperativeFamilyAst {
     /// CR 508.1d: Attack a required player this turn/combat if able. The
     /// `required_player` filter selects whom the forced attacker must attack —
     /// `TargetFilter::Controller` for "attacks you", or
-    /// `TargetFilter::SourceChosenPlayer` for "attacks that player" (the
-    /// opponent persisted on the source by a preceding "choose an opponent"
-    /// step, e.g. Ruhan of the Fomori).
+    /// `ControllerRef::ChosenPlayer { index }` for "attacks that player" (the
+    /// opponent chosen by a preceding "choose an opponent" instruction in the
+    /// same resolution, e.g. Ruhan of the Fomori).
     ForceAttack {
         duration: Duration,
         required_player: TargetFilter,

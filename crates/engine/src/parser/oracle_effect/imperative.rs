@@ -10062,8 +10062,8 @@ mod tests {
     #[test]
     fn parse_attack_that_player_this_combat_if_able() {
         // CR 508.1d: Ruhan of the Fomori / Raving Dead / Knight Rampager —
-        // "attacks that player" references the chosen opponent persisted on the
-        // source, lowered to TargetFilter::SourceChosenPlayer.
+        // "attacks that player" references the opponent chosen earlier in the
+        // same resolution, lowered to ControllerRef::ChosenPlayer { index: 0 }.
         let result = try_parse_attack_if_able("attacks that player this combat if able")
             .expect("should parse 'attacks that player this combat if able'");
         match result {
