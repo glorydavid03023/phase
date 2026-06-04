@@ -1,4 +1,5 @@
-use super::{effect_object_targets, resolve_player_for_context_ref};
+use super::resolve_player_for_context_ref;
+use crate::game::targeting::resolved_object_ids_for_filter;
 use crate::types::ability::{
     ContinuousModification, Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter,
 };
@@ -23,7 +24,7 @@ pub fn resolve(
     };
 
     let player = resolve_player_for_context_ref(state, ability, required_player);
-    for obj_id in effect_object_targets(target, &ability.targets) {
+    for obj_id in resolved_object_ids_for_filter(state, ability, target) {
         if !state.objects.contains_key(&obj_id) {
             continue;
         }
@@ -132,22 +133,15 @@ mod tests {
             "Ruhan".to_string(),
             Zone::Battlefield,
         );
-        let target = create_object(
-            &mut state,
-            CardId(2),
-            PlayerId(0),
-            "Ruhan".to_string(),
-            Zone::Battlefield,
-        );
         let mut ability = ResolvedAbility::new(
             Effect::ForceAttack {
-                target: TargetFilter::Any,
+                target: TargetFilter::SelfRef,
                 required_player: TargetFilter::Typed(
                     TypedFilter::default().controller(ControllerRef::ChosenPlayer { index: 0 }),
                 ),
                 duration: Duration::UntilEndOfCombat,
             },
-            vec![TargetRef::Object(target)],
+            vec![],
             source,
             PlayerId(0),
         );
@@ -159,8 +153,8 @@ mod tests {
         let effect = state
             .transient_continuous_effects
             .iter()
-            .find(|ce| ce.affected == TargetFilter::SpecificObject { id: target })
-            .expect("force attack should create a transient effect for the target");
+            .find(|ce| ce.affected == TargetFilter::SpecificObject { id: source })
+            .expect("force attack should create a transient effect for the source");
 
         assert!(effect.modifications.iter().any(|m| {
             matches!(
