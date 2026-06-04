@@ -51,7 +51,7 @@ pub fn resolve(
 mod tests {
     use super::*;
     use crate::game::zones::create_object;
-    use crate::types::ability::{Duration, TargetRef};
+    use crate::types::ability::{ControllerRef, Duration, TargetRef, TypedFilter};
     use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::player::PlayerId;
     use crate::types::zones::Zone;
@@ -120,5 +120,55 @@ mod tests {
                 source_id,
             } if *source_id == source
         )));
+    }
+
+    #[test]
+    fn force_attack_resolves_chosen_required_player() {
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Ruhan".to_string(),
+            Zone::Battlefield,
+        );
+        let target = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Ruhan".to_string(),
+            Zone::Battlefield,
+        );
+        let mut ability = ResolvedAbility::new(
+            Effect::ForceAttack {
+                target: TargetFilter::Any,
+                required_player: TargetFilter::Typed(
+                    TypedFilter::default().controller(ControllerRef::ChosenPlayer { index: 0 }),
+                ),
+                duration: Duration::UntilEndOfCombat,
+            },
+            vec![TargetRef::Object(target)],
+            source,
+            PlayerId(0),
+        );
+        ability.chosen_players = vec![PlayerId(1)];
+
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        let effect = state
+            .transient_continuous_effects
+            .iter()
+            .find(|ce| ce.affected == TargetFilter::SpecificObject { id: target })
+            .expect("force attack should create a transient effect for the target");
+
+        assert!(effect.modifications.iter().any(|m| {
+            matches!(
+                m,
+                ContinuousModification::AddStaticMode {
+                    mode: StaticMode::MustAttackPlayer { player },
+                } if *player == PlayerId(1)
+            )
+        }));
     }
 }
