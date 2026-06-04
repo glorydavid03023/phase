@@ -622,8 +622,8 @@ pub fn parse_target_with_syntax<'a>(
                 syntax,
             );
         }
-        // CR 115.4: "target permanent or player" — the proliferate-style target
-        // pool (Skyship Plunderer, Maulfist Revolutionary, Contagion Engine).
+        // CR 115.1: "target permanent or player" — the proliferate-style
+        // target pool (Skyship Plunderer, Maulfist Revolutionary).
         // Matched before the bare "permanent" type phrase (longest-match-first)
         // so the "or player" half is not dropped.
         if let Ok((rest, _)) =

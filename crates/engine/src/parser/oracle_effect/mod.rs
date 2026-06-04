@@ -6993,7 +6993,7 @@ fn lower_clause_ast(ast: ClauseAst, ctx: &mut ParseContext) -> ParsedEffectClaus
 /// CR 701.34a (operation) + CR 122.1: "For each kind of counter on target
 /// permanent or player, give that permanent or player another counter of that
 /// kind." — the proliferate counter-add forced on a single chosen target
-/// (Skyship Plunderer, Maulfist Revolutionary, Fuel for the Cause). The card
+/// (Skyship Plunderer, Maulfist Revolutionary). The card
 /// spells out the operation rather than using the proliferate keyword, and it
 /// always targets exactly one permanent-or-player, so it lowers to the targeted
 /// `Effect::ProliferateTarget` (not `Effect::Proliferate`, which prompts a

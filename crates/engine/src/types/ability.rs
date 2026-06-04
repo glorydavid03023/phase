@@ -5999,7 +5999,7 @@ pub enum Effect {
     /// that kind." This is the proliferate counter-add operation, but forced on
     /// a single chosen target rather than a player-chosen set — so it carries a
     /// `target` and runs without a `ProliferateChoice` prompt. Skyship
-    /// Plunderer, Maulfist Revolutionary, Fuel for the Cause.
+    /// Plunderer and Maulfist Revolutionary.
     ProliferateTarget {
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
