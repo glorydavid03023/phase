@@ -38,7 +38,7 @@ use super::ability_utils::{
 use super::casting_costs::{self, check_additional_cost_or_pay};
 use super::engine::EngineError;
 use super::functioning_abilities::active_static_definitions;
-use super::game_object::{PreparedState, PrototypeFormState};
+use super::game_object::{GameObject, PreparedState, PrototypeFormState};
 use super::mana_payment;
 use super::quantity::resolve_quantity;
 use super::restrictions;
@@ -6043,6 +6043,29 @@ pub fn handle_cast_spell(
     )
 }
 
+fn normal_cast_choice_cost_and_affordability(
+    state: &GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    obj: &GameObject,
+) -> (ManaCost, bool) {
+    // CR 601.2b + CR 118.9a: `Unlimited` `CastFromHandFree` (Omniscience)
+    // replaces the printed mana cost with nothing on the normal path. Every
+    // hand alternative-cost prompt must treat that path as affordable and
+    // display `NoCost`; otherwise an affordable alternative cost can hide the
+    // free normal cast.
+    if unlimited_hand_cast_free_applies(state, player, obj, CastingVariant::Normal) {
+        return (ManaCost::NoCost, true);
+    }
+
+    // CR 601.2f + CR 118.9d: normal-path affordability and displayed cost
+    // reflect active cost modifiers before comparing against alternative costs.
+    let normal_cost = apply_cost_modifiers_to_base(state, player, object_id, obj.mana_cost.clone())
+        .unwrap_or_else(|| obj.mana_cost.clone());
+    let normal_affordable = can_pay_cost_after_auto_tap(state, player, object_id, &normal_cost);
+    (normal_cost, normal_affordable)
+}
+
 pub fn handle_cast_spell_with_payment_mode(
     state: &mut GameState,
     player: PlayerId,
@@ -6172,17 +6195,11 @@ pub fn handle_cast_spell_with_payment_mode(
                 crate::types::keywords::Keyword::Warp(cost) => Some(cost.clone()),
                 _ => None,
             }) {
-                // CR 601.2f + CR 118.9d: affordability and the displayed costs
-                // must reflect active cost modifiers — applied to BOTH the printed
-                // cost and the warp alternative cost (CR 118.9d).
-                let normal_cost =
-                    apply_cost_modifiers_to_base(state, player, object_id, obj.mana_cost.clone())
-                        .unwrap_or_else(|| obj.mana_cost.clone());
+                let (normal_cost, normal_affordable) =
+                    normal_cast_choice_cost_and_affordability(state, player, object_id, obj);
                 let warp_cost_eff =
                     apply_cost_modifiers_to_base(state, player, object_id, warp_cost.clone())
                         .unwrap_or_else(|| warp_cost.clone());
-                let normal_affordable =
-                    can_pay_cost_after_auto_tap(state, player, object_id, &normal_cost);
                 let warp_affordable =
                     can_pay_cost_after_auto_tap(state, player, object_id, &warp_cost_eff);
                 if normal_affordable && warp_affordable {
@@ -6246,15 +6263,12 @@ pub fn handle_cast_spell_with_payment_mode(
                 // CR 601.2f + CR 118.9d: affordability and the displayed costs
                 // must reflect active cost modifiers — applied to BOTH the printed
                 // cost and the evoke mana sub-cost (CR 118.9d).
-                let normal_cost =
-                    apply_cost_modifiers_to_base(state, player, object_id, obj.mana_cost.clone())
-                        .unwrap_or_else(|| obj.mana_cost.clone());
+                let (normal_cost, normal_affordable) =
+                    normal_cast_choice_cost_and_affordability(state, player, object_id, obj);
                 let evoke_mana_eff = evoke_mana_part.as_ref().map(|m| {
                     apply_cost_modifiers_to_base(state, player, object_id, m.clone())
                         .unwrap_or_else(|| m.clone())
                 });
-                let normal_affordable =
-                    can_pay_cost_after_auto_tap(state, player, object_id, &normal_cost);
                 let evoke_mana_affordable = match &evoke_mana_eff {
                     Some(m) => can_pay_cost_after_auto_tap(state, player, object_id, m),
                     // CR 118.3: a zero mana cost is always payable.
@@ -6312,14 +6326,11 @@ pub fn handle_cast_spell_with_payment_mode(
                 // CR 601.2f + CR 118.9d: affordability and the displayed costs
                 // must reflect active cost modifiers — applied to BOTH the printed
                 // cost and the overload alternative cost (CR 118.9d).
-                let normal_cost =
-                    apply_cost_modifiers_to_base(state, player, object_id, obj.mana_cost.clone())
-                        .unwrap_or_else(|| obj.mana_cost.clone());
+                let (normal_cost, normal_affordable) =
+                    normal_cast_choice_cost_and_affordability(state, player, object_id, obj);
                 let overload_cost_eff =
                     apply_cost_modifiers_to_base(state, player, object_id, overload_cost.clone())
                         .unwrap_or_else(|| overload_cost.clone());
-                let normal_affordable =
-                    can_pay_cost_after_auto_tap(state, player, object_id, &normal_cost);
                 let overload_affordable =
                     can_pay_cost_after_auto_tap(state, player, object_id, &overload_cost_eff);
                 if normal_affordable && overload_affordable {
@@ -6371,14 +6382,11 @@ pub fn handle_cast_spell_with_payment_mode(
                 // CR 601.2f: affordability and the displayed costs must reflect
                 // active cost modifiers — applied to BOTH the printed cost and the
                 // MTMTE alternative cost.
-                let normal_cost =
-                    apply_cost_modifiers_to_base(state, player, object_id, obj.mana_cost.clone())
-                        .unwrap_or_else(|| obj.mana_cost.clone());
+                let (normal_cost, normal_affordable) =
+                    normal_cast_choice_cost_and_affordability(state, player, object_id, obj);
                 let mtmte_cost_eff =
                     apply_cost_modifiers_to_base(state, player, object_id, mtmte_cost.clone())
                         .unwrap_or_else(|| mtmte_cost.clone());
-                let normal_affordable =
-                    can_pay_cost_after_auto_tap(state, player, object_id, &normal_cost);
                 let mtmte_affordable =
                     can_pay_cost_after_auto_tap(state, player, object_id, &mtmte_cost_eff);
                 if normal_affordable && mtmte_affordable {
@@ -6428,14 +6436,11 @@ pub fn handle_cast_spell_with_payment_mode(
                 // CR 601.2f + CR 118.9d: affordability and the displayed costs
                 // must reflect active cost modifiers — applied to BOTH the printed
                 // cost and the cleave alternative cost (CR 118.9d).
-                let normal_cost =
-                    apply_cost_modifiers_to_base(state, player, object_id, obj.mana_cost.clone())
-                        .unwrap_or_else(|| obj.mana_cost.clone());
+                let (normal_cost, normal_affordable) =
+                    normal_cast_choice_cost_and_affordability(state, player, object_id, obj);
                 let cleave_cost_eff =
                     apply_cost_modifiers_to_base(state, player, object_id, cleave_cost.clone())
                         .unwrap_or_else(|| cleave_cost.clone());
-                let normal_affordable =
-                    can_pay_cost_after_auto_tap(state, player, object_id, &normal_cost);
                 let cleave_affordable =
                     can_pay_cost_after_auto_tap(state, player, object_id, &cleave_cost_eff);
                 if normal_affordable && cleave_affordable {
@@ -6496,14 +6501,11 @@ pub fn handle_cast_spell_with_payment_mode(
                 // CR 601.2f + CR 118.9d: affordability and the displayed costs
                 // must reflect active cost modifiers — applied to BOTH the printed
                 // cost and the bestow alternative cost (CR 118.9d).
-                let normal_cost =
-                    apply_cost_modifiers_to_base(state, player, object_id, obj.mana_cost.clone())
-                        .unwrap_or_else(|| obj.mana_cost.clone());
+                let (normal_cost, normal_affordable) =
+                    normal_cast_choice_cost_and_affordability(state, player, object_id, obj);
                 let bestow_cost_eff =
                     apply_cost_modifiers_to_base(state, player, object_id, bestow_cost.clone())
                         .unwrap_or_else(|| bestow_cost.clone());
-                let normal_affordable =
-                    can_pay_cost_after_auto_tap(state, player, object_id, &normal_cost);
                 let bestow_affordable =
                     can_pay_cost_after_auto_tap(state, player, object_id, &bestow_cost_eff);
                 if has_legal_creature_target && normal_affordable && bestow_affordable {
@@ -6566,14 +6568,11 @@ pub fn handle_cast_spell_with_payment_mode(
                 // CR 601.2f + CR 118.9d: affordability and displayed costs reflect
                 // active cost modifiers — applied to BOTH the printed cost and the
                 // mutate alternative cost.
-                let normal_cost =
-                    apply_cost_modifiers_to_base(state, player, object_id, obj.mana_cost.clone())
-                        .unwrap_or_else(|| obj.mana_cost.clone());
+                let (normal_cost, normal_affordable) =
+                    normal_cast_choice_cost_and_affordability(state, player, object_id, obj);
                 let mutate_cost_eff =
                     apply_cost_modifiers_to_base(state, player, object_id, mutate_cost.clone())
                         .unwrap_or_else(|| mutate_cost.clone());
-                let normal_affordable =
-                    can_pay_cost_after_auto_tap(state, player, object_id, &normal_cost);
                 let mutate_affordable =
                     can_pay_cost_after_auto_tap(state, player, object_id, &mutate_cost_eff);
                 if has_legal_mutate_target && normal_affordable && mutate_affordable {
@@ -6636,14 +6635,11 @@ pub fn handle_cast_spell_with_payment_mode(
                 // CR 601.2f + CR 118.9d: affordability and the displayed costs
                 // must reflect active cost modifiers — applied to BOTH the printed
                 // cost and the awaken alternative cost (CR 118.9d).
-                let normal_cost =
-                    apply_cost_modifiers_to_base(state, player, object_id, obj.mana_cost.clone())
-                        .unwrap_or_else(|| obj.mana_cost.clone());
+                let (normal_cost, normal_affordable) =
+                    normal_cast_choice_cost_and_affordability(state, player, object_id, obj);
                 let awaken_cost_eff =
                     apply_cost_modifiers_to_base(state, player, object_id, awaken_cost.clone())
                         .unwrap_or_else(|| awaken_cost.clone());
-                let normal_affordable =
-                    can_pay_cost_after_auto_tap(state, player, object_id, &normal_cost);
                 let awaken_affordable =
                     can_pay_cost_after_auto_tap(state, player, object_id, &awaken_cost_eff);
                 if has_legal_land && normal_affordable && awaken_affordable {
@@ -6686,14 +6682,11 @@ pub fn handle_cast_spell_with_payment_mode(
                 crate::types::keywords::Keyword::Impending { cost, .. } => Some(cost.clone()),
                 _ => None,
             }) {
-                let normal_cost =
-                    apply_cost_modifiers_to_base(state, player, object_id, obj.mana_cost.clone())
-                        .unwrap_or_else(|| obj.mana_cost.clone());
+                let (normal_cost, normal_affordable) =
+                    normal_cast_choice_cost_and_affordability(state, player, object_id, obj);
                 let impending_cost_eff =
                     apply_cost_modifiers_to_base(state, player, object_id, impending_cost.clone())
                         .unwrap_or_else(|| impending_cost.clone());
-                let normal_affordable =
-                    can_pay_cost_after_auto_tap(state, player, object_id, &normal_cost);
                 let impending_affordable =
                     can_pay_cost_after_auto_tap(state, player, object_id, &impending_cost_eff);
                 if normal_affordable && impending_affordable {
@@ -6732,9 +6725,8 @@ pub fn handle_cast_spell_with_payment_mode(
     if let Some(obj) = state.objects.get(&object_id) {
         if obj.zone == Zone::Hand {
             if let Some(prototype_form) = prototype_form_from_object(obj) {
-                let normal_cost =
-                    apply_cost_modifiers_to_base(state, player, object_id, obj.mana_cost.clone())
-                        .unwrap_or_else(|| obj.mana_cost.clone());
+                let (normal_cost, normal_affordable) =
+                    normal_cast_choice_cost_and_affordability(state, player, object_id, obj);
                 let prototype_cost_eff = apply_cost_modifiers_to_base(
                     state,
                     player,
@@ -6742,8 +6734,6 @@ pub fn handle_cast_spell_with_payment_mode(
                     prototype_form.mana_cost.clone(),
                 )
                 .unwrap_or_else(|| prototype_form.mana_cost.clone());
-                let normal_affordable =
-                    can_pay_cost_after_auto_tap(state, player, object_id, &normal_cost);
                 let prototype_affordable =
                     can_pay_cost_after_auto_tap(state, player, object_id, &prototype_cost_eff);
                 if normal_affordable && prototype_affordable {
@@ -19345,6 +19335,222 @@ mod tests {
             !matches!(cost, ManaCost::NoCost),
             "Omniscience must not apply to command-zone commanders, got {cost:?}"
         );
+    }
+
+    /// Issue #2432: Omniscience must offer a free normal cast for spells whose
+    /// printed mana cost is unaffordable but whose alternative cost is payable.
+    mod omniscience_alt_cost_2432 {
+        use super::*;
+        use crate::types::game_state::AlternativeCastKeyword;
+        use crate::types::keywords::{EvokeCost, Keyword};
+        use crate::types::mana::{ManaCost, ManaCostShard};
+
+        fn install_omniscience(state: &mut GameState) {
+            let id = create_object(
+                state,
+                CardId(2_432_001),
+                PlayerId(0),
+                "Omniscience".to_string(),
+                Zone::Battlefield,
+            );
+            state.objects.get_mut(&id).unwrap().static_definitions.push(
+                parse_static_line(
+                    "You may cast spells from your hand without paying their mana costs.",
+                )
+                .expect("Omniscience static should parse"),
+            );
+        }
+
+        /// Quantum Riddler class: printed {3}{U}{U}, Warp {1}{U}.
+        fn create_quantum_riddler(state: &mut GameState) -> ObjectId {
+            let obj_id = create_object(
+                state,
+                CardId(2_432_002),
+                PlayerId(0),
+                "Quantum Riddler".to_string(),
+                Zone::Hand,
+            );
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::Blue, ManaCostShard::Blue],
+                generic: 3,
+            };
+            obj.base_mana_cost = obj.mana_cost.clone();
+            obj.keywords.push(Keyword::Warp(ManaCost::Cost {
+                shards: vec![ManaCostShard::Blue],
+                generic: 1,
+            }));
+            obj_id
+        }
+
+        /// Mulldrifter class: printed {4}{U}, Evoke {2}{U}.
+        fn create_mulldrifter(state: &mut GameState) -> ObjectId {
+            let obj_id = create_object(
+                state,
+                CardId(2_432_003),
+                PlayerId(0),
+                "Mulldrifter".to_string(),
+                Zone::Hand,
+            );
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::Blue],
+                generic: 4,
+            };
+            obj.base_mana_cost = obj.mana_cost.clone();
+            obj.keywords
+                .push(Keyword::Evoke(EvokeCost::Mana(ManaCost::Cost {
+                    shards: vec![ManaCostShard::Blue],
+                    generic: 2,
+                })));
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Unimplemented {
+                    name: "Mulldrifter".to_string(),
+                    description: None,
+                },
+            ));
+            obj_id
+        }
+
+        #[test]
+        fn omniscience_offers_free_normal_when_warp_affordable_but_printed_is_not() {
+            let mut state = setup_game_at_main_phase();
+            install_omniscience(&mut state);
+            let riddler = create_quantum_riddler(&mut state);
+            // Enough for Warp {1}{U}, not for {3}{U}{U}.
+            add_mana(&mut state, PlayerId(0), ManaType::Colorless, 1);
+            add_mana(&mut state, PlayerId(0), ManaType::Blue, 1);
+
+            let mut events = Vec::new();
+            let wf = handle_cast_spell(
+                &mut state,
+                PlayerId(0),
+                riddler,
+                CardId(2_432_002),
+                &mut events,
+            )
+            .unwrap();
+
+            match wf {
+                WaitingFor::AlternativeCastChoice {
+                    keyword: AlternativeCastKeyword::Warp,
+                    normal_cost,
+                    alternative_cost,
+                    ..
+                } => {
+                    assert_eq!(
+                        normal_cost,
+                        ManaCost::NoCost,
+                        "Omniscience must surface NoCost as the normal option"
+                    );
+                    assert_eq!(
+                        alternative_cost,
+                        Some(ManaCost::Cost {
+                            shards: vec![ManaCostShard::Blue],
+                            generic: 1,
+                        })
+                    );
+                }
+                other => {
+                    panic!("expected Warp choice with free normal under Omniscience, got {other:?}")
+                }
+            }
+        }
+
+        #[test]
+        fn omniscience_offers_free_normal_when_evoke_affordable_but_printed_is_not() {
+            let mut state = setup_game_at_main_phase();
+            install_omniscience(&mut state);
+            let mulldrifter = create_mulldrifter(&mut state);
+            // Enough for Evoke {2}{U}, not for printed {4}{U}.
+            add_mana(&mut state, PlayerId(0), ManaType::Colorless, 2);
+            add_mana(&mut state, PlayerId(0), ManaType::Blue, 1);
+
+            let mut events = Vec::new();
+            let wf = handle_cast_spell(
+                &mut state,
+                PlayerId(0),
+                mulldrifter,
+                CardId(2_432_003),
+                &mut events,
+            )
+            .unwrap();
+
+            match wf {
+                WaitingFor::AlternativeCastChoice {
+                    keyword: AlternativeCastKeyword::Evoke,
+                    normal_cost,
+                    alternative_cost,
+                    ..
+                } => {
+                    assert_eq!(
+                        normal_cost,
+                        ManaCost::NoCost,
+                        "Omniscience must surface NoCost as the normal option"
+                    );
+                    assert_eq!(
+                        alternative_cost,
+                        Some(ManaCost::Cost {
+                            shards: vec![ManaCostShard::Blue],
+                            generic: 2,
+                        })
+                    );
+                }
+                other => {
+                    panic!(
+                        "expected Evoke choice with free normal under Omniscience, got {other:?}"
+                    )
+                }
+            }
+        }
+
+        #[test]
+        fn omniscience_warp_spell_normal_choice_proceeds_without_mana_payment() {
+            let mut state = setup_game_at_main_phase();
+            install_omniscience(&mut state);
+            let riddler = create_quantum_riddler(&mut state);
+            add_mana(&mut state, PlayerId(0), ManaType::Colorless, 1);
+            add_mana(&mut state, PlayerId(0), ManaType::Blue, 1);
+
+            let mut events = Vec::new();
+            let wf = handle_cast_spell(
+                &mut state,
+                PlayerId(0),
+                riddler,
+                CardId(2_432_002),
+                &mut events,
+            )
+            .unwrap();
+            assert!(matches!(
+                wf,
+                WaitingFor::AlternativeCastChoice {
+                    keyword: AlternativeCastKeyword::Warp,
+                    ..
+                }
+            ));
+
+            let wf = handle_warp_cost_choice(
+                &mut state,
+                PlayerId(0),
+                riddler,
+                CardId(2_432_002),
+                crate::types::actions::AlternativeCastDecision::Normal,
+                &mut events,
+            )
+            .unwrap();
+
+            assert!(
+                !matches!(wf, WaitingFor::AlternativeCastChoice { .. }),
+                "normal choice under Omniscience must not re-prompt; got {wf:?}"
+            );
+            assert!(
+                !matches!(wf, WaitingFor::ManaPayment { .. }),
+                "Omniscience normal cast must skip mana payment; got {wf:?}"
+            );
+        }
     }
 
     // Witherbloom, the Balancer (cost {5}{B}{G}) has printed `Keyword::Affinity(Creature)`.
