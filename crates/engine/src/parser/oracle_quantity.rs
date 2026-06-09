@@ -91,6 +91,10 @@ pub(crate) fn parse_quantity_ref_with_context(
 
     // Complex patterns requiring type phrase parsing or counter normalization.
 
+    if let Some(qty) = parse_sacrificed_permanents_this_turn_quantity(trimmed) {
+        return Some(qty);
+    }
+
     // CR 608.2c + CR 122.1: "the number of [kind] counter[s] removed this way"
     // is a dynamic amount from the preceding RemoveCounter effect, not an
     // object count over a battlefield type phrase.
@@ -813,6 +817,50 @@ pub(crate) fn parse_cda_quantity_with_context(
     }
 
     None
+}
+
+/// CR 701.21a: "the number of permanents you've sacrificed this turn" and typed
+/// variants ("the number of artifacts you've sacrificed this turn").
+fn parse_sacrificed_permanents_this_turn_quantity(text: &str) -> Option<QuantityRef> {
+    let trimmed = text.trim().trim_end_matches('.');
+    let (rest, _) = tag::<_, _, OracleError<'_>>("the number of ")
+        .parse(trimmed)
+        .ok()?;
+    let (rest, filter) = parse_sacrificed_permanents_this_turn_filter(rest)?;
+    if !rest.is_empty() {
+        return None;
+    }
+    Some(QuantityRef::SacrificedThisTurn {
+        player: PlayerScope::Controller,
+        filter,
+    })
+}
+
+fn parse_sacrificed_permanents_this_turn_filter(input: &str) -> Option<(&str, TargetFilter)> {
+    let (suffix_rest, type_text) = take_until::<_, _, OracleError<'_>>(" you")
+        .parse(input)
+        .ok()?;
+    let (rest, _) = (
+        tag::<_, _, OracleError<'_>>(" you"),
+        opt(tag("'ve")),
+        tag(" sacrificed this turn"),
+    )
+        .parse(suffix_rest)
+        .ok()?;
+    if type_text.trim() == "permanents" {
+        return Some((
+            rest,
+            TargetFilter::Typed(TypedFilter {
+                type_filters: vec![TypeFilter::Permanent],
+                ..Default::default()
+            }),
+        ));
+    }
+    let (filter, leftover) = parse_type_phrase(type_text.trim());
+    if !leftover.trim().is_empty() || filter == TargetFilter::Any {
+        return None;
+    }
+    Some((rest, filter))
 }
 
 // CR 604.3: "the total number of cards you own in exile and in your graveyard
@@ -2877,6 +2925,24 @@ mod tests {
                 panic!("Expected PlayerCount{{ControlsCount(creature+pt)}}, got {other:?}")
             }
         }
+    }
+
+    #[test]
+    fn parse_cda_quantity_permanents_sacrificed_this_turn() {
+        let expr = parse_cda_quantity("the number of permanents you've sacrificed this turn")
+            .expect("should parse");
+        assert_eq!(
+            expr,
+            QuantityExpr::Ref {
+                qty: QuantityRef::SacrificedThisTurn {
+                    player: PlayerScope::Controller,
+                    filter: TargetFilter::Typed(TypedFilter {
+                        type_filters: vec![TypeFilter::Permanent],
+                        ..Default::default()
+                    }),
+                }
+            }
+        );
     }
 
     // A1 "one plus" path: the Offset arm wraps the inner PlayerCount unchanged

@@ -17914,6 +17914,7 @@ fn extract_effect_verb(effect: &Effect) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::parse_oracle_text;
     use crate::types::ability::{
         AbilityCondition, AggregateFunction, BounceSelection, CardTypeSetSource, CastVariantPaid,
         ChoiceType, ChosenSubtypeKind, CombatRelation, CombatRelationSubject, Comparator,
@@ -34754,6 +34755,129 @@ mod tests {
                 comparator: Comparator::GE,
                 rhs: QuantityExpr::Fixed { value: 6 },
             })
+        );
+    }
+
+    #[test]
+    fn parse_where_x_threshold_static_grant_condition() {
+        let def = parse_effect_chain(
+            "put X +1/+1 counters on target attacking creature, where X is the number of permanents you've sacrificed this turn. If X is three or more, that creature gains lifelink until end of turn.",
+            AbilityKind::Spell,
+        );
+        let grant = def
+            .sub_ability
+            .expect("expected conditional grant continuation");
+        let Effect::GenericEffect {
+            target,
+            static_abilities,
+            ..
+        } = &*grant.effect
+        else {
+            panic!("expected GenericEffect grant, got {:?}", grant.effect);
+        };
+        assert_eq!(*target, Some(TargetFilter::ParentTarget));
+        let static_def = static_abilities
+            .first()
+            .expect("lifelink grant must carry a static definition");
+        assert!(
+            matches!(
+                static_def.affected.as_ref(),
+                Some(TargetFilter::Typed(tf))
+                    if tf.type_filters == [TypeFilter::Creature]
+            ),
+            "chain parser binds 'that creature' to a creature filter, got {:?}",
+            static_def.affected
+        );
+        assert!(
+            static_def
+                .modifications
+                .contains(&ContinuousModification::AddKeyword {
+                    keyword: Keyword::Lifelink
+                }),
+            "lifelink grant must add lifelink to the parent target, got {:?}",
+            static_def.modifications
+        );
+        let condition = static_abilities
+            .first()
+            .and_then(|static_def| static_def.condition.as_ref())
+            .expect("lifelink grant must carry static condition");
+        let StaticCondition::QuantityComparison {
+            lhs,
+            comparator,
+            rhs,
+        } = condition
+        else {
+            panic!("expected QuantityComparison condition, got {condition:?}");
+        };
+        assert_eq!(*comparator, Comparator::GE);
+        assert_eq!(*rhs, QuantityExpr::Fixed { value: 3 });
+        assert!(
+            matches!(
+                lhs,
+                QuantityExpr::Ref {
+                    qty: QuantityRef::SacrificedThisTurn { .. }
+                }
+            ),
+            "where-X static grant condition must bind to SacrificedThisTurn, got {lhs:?}"
+        );
+    }
+
+    #[test]
+    fn parse_obsessive_pursuit_full_trigger_binds_static_grant_where_x() {
+        let parsed = parse_oracle_text(
+            "Whenever you attack, put X +1/+1 counters on target attacking creature, where X is the number of permanents you've sacrificed this turn. If X is three or more, that creature gains lifelink until end of turn.",
+            "Obsessive Pursuit",
+            &[],
+            &["Enchantment".to_string()],
+            &[],
+        );
+        let trigger = parsed.triggers.first().expect("expected attack trigger");
+        let grant = trigger
+            .execute
+            .as_deref()
+            .expect("expected trigger execute ability")
+            .sub_ability
+            .as_deref()
+            .expect("expected conditional lifelink continuation");
+        let Effect::GenericEffect {
+            static_abilities,
+            target,
+            ..
+        } = &*grant.effect
+        else {
+            panic!("expected GenericEffect grant, got {:?}", grant.effect);
+        };
+        assert_eq!(*target, Some(TargetFilter::ParentTarget));
+        let static_def = static_abilities
+            .first()
+            .expect("lifelink grant must carry a static definition");
+        assert_eq!(static_def.affected, Some(TargetFilter::ParentTarget));
+        assert!(
+            static_def
+                .modifications
+                .contains(&ContinuousModification::AddKeyword {
+                    keyword: Keyword::Lifelink
+                }),
+            "full trigger must parse the rider as a lifelink grant, got {:?}",
+            static_def.modifications
+        );
+        let Some(StaticCondition::QuantityComparison { lhs, rhs, .. }) =
+            static_def.condition.as_ref()
+        else {
+            panic!(
+                "lifelink grant must carry QuantityComparison condition, got {:?}",
+                static_def.condition
+            );
+        };
+        assert_eq!(*rhs, QuantityExpr::Fixed { value: 3 });
+        assert!(
+            matches!(
+                lhs,
+                QuantityExpr::Ref {
+                    qty: QuantityRef::SacrificedThisTurn { .. }
+                }
+            ),
+            "full trigger where-X condition must bind to SacrificedThisTurn, got {lhs:?}"
         );
     }
 
