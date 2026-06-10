@@ -51,7 +51,6 @@ mod devour_intellect_treasure_rider;
 mod dig_rest_pile_stranding_on_etb_pause;
 mod doran_attack_block_pump;
 mod double_strike_first_strike_trigger_removes_attacker;
-mod dralnu_dealt_damage_sacrifice;
 mod dredgers_insight_mill_from_among;
 mod duskmantle_seer_each_player_reveal;
 mod elemental_spectacle_regression;
