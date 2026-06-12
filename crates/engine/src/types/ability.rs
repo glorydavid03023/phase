@@ -6601,6 +6601,18 @@ pub enum Effect {
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
     },
+    /// CR 613.1b: Mass control-change (Layer 2 — control-changing effects) —
+    /// gain control of EVERY permanent matching `target`, with no targeting or
+    /// selection (the untargeted "all" counterpart of `GainControl`, mirroring
+    /// `Destroy` → `DestroyAll`).
+    /// Hellkite Tyrant ("gain control of all artifacts that player controls").
+    /// `target` is enumerated against the battlefield at resolution; a
+    /// `controller: TargetPlayer` filter binds to the effect's player target
+    /// (e.g. the player dealt combat damage).
+    GainControlAll {
+        #[serde(default = "default_target_filter_none")]
+        target: TargetFilter,
+    },
     ControlNextTurn {
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
@@ -9168,6 +9180,10 @@ impl Effect {
             | Effect::DamageAll { .. }
             | Effect::DamageEachPlayer { .. }
             | Effect::DestroyAll { .. }
+            // CR 613.1b: GainControlAll's `target` is a mass *population* filter
+            // (enumerated at resolution), not a chosen target slot — like
+            // DestroyAll, its `target_filter()` is None.
+            | Effect::GainControlAll { .. }
             | Effect::GoadAll { .. }
             | Effect::BounceAll { .. }
             | Effect::CounterAll { .. }
@@ -9371,6 +9387,7 @@ impl Effect {
             | Effect::ChangeZone { .. }
             | Effect::ChangeZoneAll { .. }
             | Effect::GainControl { .. }
+            | Effect::GainControlAll { .. }
             | Effect::ControlNextTurn { .. }
             | Effect::Attach { .. }
             | Effect::UnattachAll { .. }
@@ -9568,6 +9585,7 @@ impl Effect {
             | Effect::ChangeZone { .. }
             | Effect::ChangeZoneAll { .. }
             | Effect::GainControl { .. }
+            | Effect::GainControlAll { .. }
             | Effect::ControlNextTurn { .. }
             | Effect::Attach { .. }
             | Effect::UnattachAll { .. }
@@ -9731,6 +9749,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::ChangeZoneAll { .. } => "ChangeZoneAll",
         Effect::Dig { .. } => "Dig",
         Effect::GainControl { .. } => "GainControl",
+        Effect::GainControlAll { .. } => "GainControlAll",
         Effect::ControlNextTurn { .. } => "ControlNextTurn",
         Effect::Attach { .. } => "Attach",
         Effect::UnattachAll { .. } => "UnattachAll",
@@ -9927,6 +9946,7 @@ pub enum EffectKind {
     ChangeZoneAll,
     Dig,
     GainControl,
+    GainControlAll,
     ControlNextTurn,
     Attach,
     AttachAll,
@@ -10132,6 +10152,7 @@ impl From<&Effect> for EffectKind {
             Effect::ChangeZoneAll { .. } => EffectKind::ChangeZoneAll,
             Effect::Dig { .. } => EffectKind::Dig,
             Effect::GainControl { .. } => EffectKind::GainControl,
+            Effect::GainControlAll { .. } => EffectKind::GainControlAll,
             Effect::ControlNextTurn { .. } => EffectKind::ControlNextTurn,
             Effect::Attach { .. } => EffectKind::Attach,
             Effect::UnattachAll { .. } => EffectKind::UnattachAll,
