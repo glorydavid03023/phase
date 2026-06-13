@@ -99,6 +99,7 @@ mod issue_1326_tabernacle_upkeep_destroy;
 mod issue_1327_zack_fair;
 mod issue_1328_inti;
 mod issue_1333_brain_in_a_jar;
+mod issue_1334_marchesa;
 mod issue_1353_body_of_knowledge;
 mod issue_1353_death_pits_observer;
 mod issue_1354_coveted_jewel;
