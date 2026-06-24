@@ -1604,6 +1604,63 @@ fn exile_alt_cost_permission_grants_to_player(
     }
 }
 
+/// CR 601.2a + CR 118.9: Whether an `ExileWithAltCost` permission carries the
+/// casting card's own printed mana cost (Jace −3 class) rather than a fixed
+/// alternate cost or a free-cast zero.
+fn exile_alt_cost_permission_uses_casting_cards_mana_cost(
+    permission_cost: &ManaCost,
+    obj: &crate::game::game_object::GameObject,
+) -> bool {
+    match permission_cost {
+        ManaCost::SelfManaCost => true,
+        cost if cost.is_without_paying_mana() => false,
+        cost => {
+            if *cost == obj.mana_cost {
+                return true;
+            }
+            obj.back_face
+                .as_ref()
+                .is_some_and(|bf| *cost == bf.mana_cost)
+        }
+    }
+}
+
+/// CR 709.3 + CR 712.11b + CR 601.2a: `CastFromZone` and similar grants stamp
+/// `ExileWithAltCost { cost: obj.mana_cost }` when the card is permitted to be
+/// cast for its normal mana cost. Split cards and spell//spell MDFCs choose a
+/// face at cast time, so after face choice the payable cost is the active
+/// face's mana cost — not the front-face snapshot stored on the permission
+/// (#3987). Free-cast and fixed alternate costs must keep the stored permission
+/// cost (CR 118.9a).
+fn resolve_exile_with_alt_cost_permission_mana_cost(
+    permission_cost: &ManaCost,
+    obj: &crate::game::game_object::GameObject,
+) -> ManaCost {
+    if permission_cost.is_without_paying_mana() {
+        return permission_cost.clone();
+    }
+    match permission_cost {
+        ManaCost::SelfManaCost => obj.mana_cost.clone(),
+        _ if obj.modal_back_face
+            && exile_alt_cost_permission_uses_casting_cards_mana_cost(permission_cost, obj) =>
+        {
+            obj.mana_cost.clone()
+        }
+        other => other.clone(),
+    }
+}
+
+fn simulate_chosen_split_spell_back_face(obj: &mut crate::game::game_object::GameObject) {
+    swap_to_alternative_spell_face(obj);
+    // Mirror `ChooseModalFace { back_face: true }` so affordability preview and
+    // alt-cost resolution use the chosen face without re-prompting or swapping
+    // back to the front half (#3987).
+    obj.modal_back_face = true;
+    if let Some(ref mut bf) = obj.back_face {
+        bf.layout_kind = None;
+    }
+}
+
 pub(super) fn exile_alt_cost_permission_supports_cast(
     state: &GameState,
     obj: &crate::game::game_object::GameObject,
@@ -3777,7 +3834,7 @@ fn prepare_spell_cast_with_variant_override_inner(
                 crate::types::ability::CastingPermission::ExileWithAltCost { cost, .. }
                     if exile_alt_cost_permission_supports_cast(state, obj, player, p, None) =>
                 {
-                    Some(cost.clone())
+                    Some(resolve_exile_with_alt_cost_permission_mana_cost(cost, obj))
                 }
                 crate::types::ability::CastingPermission::Foretold { cost, .. } => {
                     Some(cost.clone())
@@ -6041,6 +6098,21 @@ fn cast_face_choice_offered_from_zone(
         || (state.format_config.command_zone && obj.zone == Zone::Command && obj.is_commander)
 }
 
+/// CR 709.3 + CR 712.11b: Spell//spell split cards and spell//spell MDFCs need a
+/// cast-time face choice from any zone that permits casting the card, not only
+/// hand or command (#3987 — Life // Death from graveyard via Jace, Telepath
+/// Unbound).
+fn cast_spell_face_choice_offered_from_zone(
+    state: &GameState,
+    obj: &crate::game::game_object::GameObject,
+) -> bool {
+    if !cast_spell_face_choice_available(obj) {
+        return false;
+    }
+    cast_face_choice_offered_from_zone(state, obj)
+        || matches!(obj.zone, Zone::Graveyard | Zone::Exile)
+}
+
 fn casting_variant_for_alternative_spell(layout: LayoutKind) -> CastingVariant {
     match layout {
         LayoutKind::Adventure => CastingVariant::Adventure,
@@ -8034,7 +8106,7 @@ pub fn handle_cast_spell_with_payment_mode(
     // re-enters this function; the swap clears the back face's Modal
     // `layout_kind`, so the re-entry casts the chosen face without re-prompting.
     if let Some(obj) = state.objects.get(&object_id) {
-        if cast_face_choice_offered_from_zone(state, obj) && cast_spell_face_choice_available(obj) {
+        if cast_spell_face_choice_offered_from_zone(state, obj) {
             return Ok(WaitingFor::ModalFaceChoice {
                 player,
                 object_id,
@@ -10019,6 +10091,19 @@ pub fn can_cast_object_now(state: &GameState, player: PlayerId, object_id: Objec
                     return can_cast_prepared_now(&sim, player, &prepared);
                 }
             }
+            // CR 709.3 + CR 712.11b: Spell//spell split cards and spell//spell
+            // MDFCs may be castable via the other face even when prepare fails
+            // on the current face — e.g. a graveyard permission cast of Life //
+            // Death when only Death is affordable (#3987).
+            if cast_spell_face_choice_available(obj)
+                && cast_spell_face_choice_offered_from_zone(state, obj)
+            {
+                let mut sim = state.clone();
+                if let Some(sim_obj) = sim.objects.get_mut(&object_id) {
+                    simulate_chosen_split_spell_back_face(sim_obj);
+                }
+                return can_cast_object_now(&sim, player, object_id);
+            }
         }
         let choices = casting_variant_choice_set(state, player, object_id);
         return !choices.options.is_empty();
@@ -10358,13 +10443,13 @@ fn can_cast_prepared_now(
     // (Esika, God of the Tree needs {1}{G}{G}) while the back face is castable
     // (The Prismatic Bridge needs {W}{U}{B}{R}{G}); the card is still legally
     // castable and will prompt ModalFaceChoice (CR 712.11b). Mirror the Adventure
-    // recursion: swap to the back face and re-test. `swap_to_alternative_spell_face`
-    // clears the back face's `layout_kind`, so the recursive call does not
+    // recursion: swap to the back face and re-test. `simulate_chosen_split_spell_back_face`
+    // clears the stashed face's `layout_kind`, so the recursive call does not
     // re-enter this branch (no infinite recursion).
     if cast_spell_face_choice_available(obj) {
         let mut sim = state.clone();
         if let Some(sim_obj) = sim.objects.get_mut(&prepared.object_id) {
-            swap_to_alternative_spell_face(sim_obj);
+            simulate_chosen_split_spell_back_face(sim_obj);
         }
         return can_cast_object_now(&sim, player, prepared.object_id);
     }
