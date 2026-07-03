@@ -975,6 +975,14 @@ fn casting_restriction_applies(
             matches!(state.phase, Phase::BeginCombat | Phase::DeclareAttackers)
         }
         CastingRestriction::BeforeCombatDamage => is_before_combat_damage(state.phase),
+        // CR 509.1 + CR 506.1: "after blockers are declared" opens once the
+        // declare-blockers step's turn-based action has put blockers in place
+        // and stays open through combat damage (CR 510) and end of combat
+        // (CR 511). Exact complement of `BeforeBlockersDeclared` within combat.
+        CastingRestriction::AfterBlockersDeclared => matches!(
+            state.phase,
+            Phase::DeclareBlockers | Phase::CombatDamage | Phase::EndCombat
+        ),
         CastingRestriction::AfterCombat => matches!(
             state.phase,
             Phase::EndCombat | Phase::PostCombatMain | Phase::End | Phase::Cleanup
@@ -2690,6 +2698,52 @@ mod tests {
             PlayerId(0),
             creature,
             "you control a commander"
+        ));
+    }
+
+    #[test]
+    fn after_blockers_declared_window_spans_declare_blockers_through_end_of_combat() {
+        // CR 509.1 + CR 506.1: the window opens once blockers are declared and
+        // stays open through the rest of combat. Exact complement of
+        // BeforeBlockersDeclared, so together they partition the five combat
+        // steps.
+        let mut state = crate::types::game_state::GameState::new_two_player(42);
+
+        // Before blockers are declared — excluded.
+        for phase in [Phase::BeginCombat, Phase::DeclareAttackers] {
+            state.phase = phase;
+            assert!(
+                !casting_restriction_applies(
+                    &state,
+                    PlayerId(0),
+                    ObjectId(1),
+                    &CastingRestriction::AfterBlockersDeclared
+                ),
+                "{phase:?} precedes blocker declaration and must be excluded"
+            );
+        }
+
+        // After blockers are declared — included.
+        for phase in [Phase::DeclareBlockers, Phase::CombatDamage, Phase::EndCombat] {
+            state.phase = phase;
+            assert!(
+                casting_restriction_applies(
+                    &state,
+                    PlayerId(0),
+                    ObjectId(1),
+                    &CastingRestriction::AfterBlockersDeclared
+                ),
+                "{phase:?} follows blocker declaration and must be included"
+            );
+        }
+
+        // Outside combat — excluded.
+        state.phase = Phase::PostCombatMain;
+        assert!(!casting_restriction_applies(
+            &state,
+            PlayerId(0),
+            ObjectId(1),
+            &CastingRestriction::AfterBlockersDeclared
         ));
     }
 

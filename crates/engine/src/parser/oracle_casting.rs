@@ -611,6 +611,7 @@ fn parse_timing_restriction(
     alt((
         preceded(tag("during "), parse_during_phrase),
         preceded(tag("before "), parse_before_phrase),
+        preceded(tag("after "), parse_after_phrase),
         preceded(
             tag("on "),
             alt((
@@ -618,7 +619,6 @@ fn parse_timing_restriction(
                 value(CastingRestriction::DuringYourTurn, tag("your turn")),
             )),
         ),
-        value(CastingRestriction::AfterCombat, tag("after combat")),
         value(CastingRestriction::AsSorcery, tag("as a sorcery")),
     ))
     .parse(input)
@@ -708,6 +708,21 @@ fn parse_before_phrase(input: &str) -> nom::IResult<&str, CastingRestriction, Or
             CastingRestriction::BeforeCombatDamage,
             alt((tag("the combat damage step"), tag("combat damage"))),
         ),
+    ))
+    .parse(input)
+}
+
+/// Sub-dispatch for "after [rest]" — blockers declared, combat. Mirror of
+/// `parse_before_phrase`: "after blockers are declared" is the complement of
+/// "before blockers are declared" within the combat phase (Aleatory, Chaotic
+/// Strike, Curtain of Light, Flash Foliage).
+fn parse_after_phrase(input: &str) -> nom::IResult<&str, CastingRestriction, OracleError<'_>> {
+    alt((
+        value(
+            CastingRestriction::AfterBlockersDeclared,
+            tag("blockers are declared"),
+        ),
+        value(CastingRestriction::AfterCombat, tag("combat")),
     ))
     .parse(input)
 }
@@ -938,6 +953,25 @@ mod tests {
         assert!(restrictions.contains(&CastingRestriction::DuringCombat));
         assert!(restrictions.contains(&CastingRestriction::DuringYourTurn));
         assert!(restrictions.contains(&CastingRestriction::BeforeBlockersDeclared));
+    }
+
+    #[test]
+    fn spell_cast_restriction_handles_combat_after_blockers() {
+        // Aleatory, Chaotic Strike, Curtain of Light, Flash Foliage all print
+        // this exact line. The "after blockers are declared" qualifier must be
+        // captured, not silently dropped, or the spell becomes castable during
+        // all of combat (CR 601.3 timing violation).
+        let restrictions = parse_casting_restriction_line(
+            "Cast this spell only during combat after blockers are declared.",
+        )
+        .expect("restrictions should parse");
+        assert!(restrictions.contains(&CastingRestriction::DuringCombat));
+        assert!(restrictions.contains(&CastingRestriction::AfterBlockersDeclared));
+        // "after combat" must still parse to the distinct AfterCombat window.
+        let after_combat = parse_casting_restriction_line("Cast this spell only after combat.")
+            .expect("restrictions should parse");
+        assert!(after_combat.contains(&CastingRestriction::AfterCombat));
+        assert!(!after_combat.contains(&CastingRestriction::AfterBlockersDeclared));
     }
 
     #[test]

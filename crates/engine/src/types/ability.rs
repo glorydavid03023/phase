@@ -13803,6 +13803,7 @@ pub enum CastingRestriction {
     BeforeAttackersDeclared,
     BeforeBlockersDeclared,
     BeforeCombatDamage,
+    AfterBlockersDeclared,
     AfterCombat,
     RequiresCondition { condition: Option<ParsedCondition> },
 }
