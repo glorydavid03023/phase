@@ -2724,7 +2724,11 @@ mod tests {
         }
 
         // After blockers are declared — included.
-        for phase in [Phase::DeclareBlockers, Phase::CombatDamage, Phase::EndCombat] {
+        for phase in [
+            Phase::DeclareBlockers,
+            Phase::CombatDamage,
+            Phase::EndCombat,
+        ] {
             state.phase = phase;
             assert!(
                 casting_restriction_applies(
