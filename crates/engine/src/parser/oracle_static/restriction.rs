@@ -2867,7 +2867,10 @@ mod activation_exemption_apostrophe_tests {
                 ActivationExemption::ManaAbilities,
                 "suffix `{suffix}` must yield the mana-abilities exemption"
             );
-            assert!(rest.is_empty(), "suffix `{suffix}` left `{rest}` unconsumed");
+            assert!(
+                rest.is_empty(),
+                "suffix `{suffix}` left `{rest}` unconsumed"
+            );
         }
     }
 
