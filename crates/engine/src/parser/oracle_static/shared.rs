@@ -693,7 +693,12 @@ fn parse_activation_compound_tail(input: &str) -> OracleResult<'_, ()> {
                 tag("activated abilities can't be activated"),
                 tag("activated abilities can\u{2019}t be activated"),
             )),
-            opt((tag(" unless they're "), tag("mana abilities"))),
+            // CR 605.1a: accept the U+2019 apostrophe too (MTGJSON's form),
+            // mirroring the dual-apostrophe "can't be activated" tag above.
+            opt((
+                alt((tag(" unless they're "), tag(" unless they\u{2019}re "))),
+                tag("mana abilities"),
+            )),
             opt(tag(".")),
         ),
     )

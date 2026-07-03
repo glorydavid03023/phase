@@ -288,8 +288,12 @@ pub(crate) fn parse_attach_only_restriction(
 pub(crate) fn parse_activation_exemption_suffix(
     input: &str,
 ) -> OracleResult<'_, ActivationExemption> {
+    // CR 605.1a: MTGJSON oracle text uses the typographic apostrophe (U+2019),
+    // so accept both forms — the adjacent "can't be activated" predicate already
+    // does (see shared.rs / evasion.rs). Straight-apostrophe-only here silently
+    // dropped the exemption and wrongly blocked mana abilities (Pithing Needle).
     let mut parser = opt(preceded(
-        tag(" unless they're "),
+        alt((tag(" unless they're "), tag(" unless they\u{2019}re "))),
         value(ActivationExemption::ManaAbilities, tag("mana abilities")),
     ));
     let (rest, exemption) = parser.parse(input)?;
@@ -2835,6 +2839,45 @@ mod spend_any_color_to_activate_abilities_tests {
                 "expected SpendManaAsAnyColor {{ activation_source_filter: Some(creatures you control) }}, got {other:?}"
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod activation_exemption_apostrophe_tests {
+    use super::*;
+
+    /// CR 605.1a: MTGJSON ships oracle text with the U+2019 apostrophe, so the
+    /// "unless they're mana abilities" exemption must parse with BOTH apostrophe
+    /// forms — matching the adjacent dual-apostrophe "can't be activated"
+    /// predicate. With only the straight apostrophe, a U+2019 printing (Pithing
+    /// Needle, Bound by Moonsilver, ...) silently dropped the exemption and the
+    /// runtime wrongly blocked the permanent's mana abilities. This is the
+    /// building-block test for the whole class, driving the suffix combinator
+    /// directly rather than one card.
+    #[test]
+    fn exemption_suffix_accepts_both_apostrophes() {
+        for suffix in [
+            " unless they're mana abilities",
+            " unless they\u{2019}re mana abilities",
+        ] {
+            let (rest, exemption) =
+                parse_activation_exemption_suffix(suffix).expect("exemption suffix must parse");
+            assert_eq!(
+                exemption,
+                ActivationExemption::ManaAbilities,
+                "suffix `{suffix}` must yield the mana-abilities exemption"
+            );
+            assert!(rest.is_empty(), "suffix `{suffix}` left `{rest}` unconsumed");
+        }
+    }
+
+    /// Absent suffix stays `None` (the exemption is genuinely optional).
+    #[test]
+    fn exemption_suffix_absent_is_none() {
+        let (rest, exemption) =
+            parse_activation_exemption_suffix(" and other text").expect("must parse (opt)");
+        assert_eq!(exemption, ActivationExemption::None);
+        assert_eq!(rest, " and other text");
     }
 }
 
