@@ -2909,6 +2909,7 @@ mod tests {
                 after: crate::types::phase::Phase::PostCombatMain,
                 followed_by: Vec::new(),
                 count: fixed(1),
+                attacker_restriction: None,
             }),
             None,
         );
@@ -2923,6 +2924,7 @@ mod tests {
                 after: crate::types::phase::Phase::Upkeep,
                 followed_by: Vec::new(),
                 count: fixed(1),
+                attacker_restriction: None,
             }),
             Projection::Unmodeled
         ));
