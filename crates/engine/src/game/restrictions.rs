@@ -971,14 +971,7 @@ fn casting_restriction_applies(
             matches!(state.phase, Phase::BeginCombat | Phase::DeclareAttackers)
         }
         CastingRestriction::BeforeCombatDamage => is_before_combat_damage(state.phase),
-        // CR 509.1 + CR 506.1: "after blockers are declared" opens once the
-        // declare-blockers step's turn-based action has put blockers in place
-        // and stays open through combat damage (CR 510) and end of combat
-        // (CR 511). Exact complement of `BeforeBlockersDeclared` within combat.
-        CastingRestriction::AfterBlockersDeclared => matches!(
-            state.phase,
-            Phase::DeclareBlockers | Phase::CombatDamage | Phase::EndCombat
-        ),
+        CastingRestriction::AfterBlockersDeclared => is_after_blockers_declared(state),
         CastingRestriction::AfterCombat => matches!(
             state.phase,
             Phase::EndCombat | Phase::PostCombatMain | Phase::End | Phase::Cleanup
@@ -1792,6 +1785,24 @@ fn is_before_combat_damage(phase: Phase) -> bool {
         phase,
         Phase::BeginCombat | Phase::DeclareAttackers | Phase::DeclareBlockers
     )
+}
+
+/// CR 509.1 + CR 506.7f: "after blockers are declared" is true only once the
+/// declare-blockers turn-based action (CR 509.1) has actually recorded a
+/// declaration this combat — not merely that the phase label reads
+/// DeclareBlockers. `CombatState::blockers_declared_by` is populated when a
+/// defending player declares blockers (including a declaration of zero blockers)
+/// and is never cleared mid-combat, so the window stays open through combat
+/// damage (CR 510) and end of combat (CR 511). Gating on the phase label alone
+/// would wrongly admit the pre-declaration declare-blockers priority window and
+/// combats where the declare-blockers step was skipped (CR 506.7f: the spell
+/// can't be cast in that combat at all).
+fn is_after_blockers_declared(state: &crate::types::game_state::GameState) -> bool {
+    state.phase.is_combat()
+        && state
+            .combat
+            .as_ref()
+            .is_some_and(|combat| !combat.blockers_declared_by.is_empty())
 }
 
 fn you_control_creature_with_keyword(
@@ -2698,53 +2709,78 @@ mod tests {
     }
 
     #[test]
-    fn after_blockers_declared_window_spans_declare_blockers_through_end_of_combat() {
-        // CR 509.1 + CR 506.1: the window opens once blockers are declared and
-        // stays open through the rest of combat. Exact complement of
-        // BeforeBlockersDeclared, so together they partition the five combat
-        // steps.
+    fn after_blockers_declared_requires_the_declare_blockers_turn_based_action() {
+        // CR 509.1 + CR 506.7f: the window opens only once the declare-blockers
+        // turn-based action has actually run this combat (tracked by
+        // `CombatState::blockers_declared_by`) — the phase label alone is not
+        // enough. It must exclude the pre-declaration declare-blockers priority
+        // window and any combat where the declare-blockers step was skipped.
+        use crate::game::combat::CombatState;
+        let restriction = CastingRestriction::AfterBlockersDeclared;
+        let applies = |state: &crate::types::game_state::GameState| {
+            casting_restriction_applies(state, PlayerId(0), ObjectId(1), &restriction)
+        };
+        let declared = || CombatState {
+            blockers_declared_by: vec![PlayerId(1)],
+            ..CombatState::default()
+        };
         let mut state = crate::types::game_state::GameState::new_two_player(42);
 
-        // Before blockers are declared — excluded.
-        for phase in [Phase::BeginCombat, Phase::DeclareAttackers] {
-            state.phase = phase;
-            assert!(
-                !casting_restriction_applies(
-                    &state,
-                    PlayerId(0),
-                    ObjectId(1),
-                    &CastingRestriction::AfterBlockersDeclared
-                ),
-                "{phase:?} precedes blocker declaration and must be excluded"
-            );
-        }
+        // Pre-declaration: in the declare-blockers step but the turn-based
+        // action hasn't recorded a declaration yet — excluded.
+        state.phase = Phase::DeclareBlockers;
+        state.combat = Some(CombatState::default());
+        assert!(
+            !applies(&state),
+            "the pre-declaration declare-blockers priority window must be excluded"
+        );
 
-        // After blockers are declared — included.
+        // Post-declaration in the same step, and persisting through combat
+        // damage and end of combat — included. (blockers_declared_by is never
+        // cleared mid-combat.)
         for phase in [
             Phase::DeclareBlockers,
             Phase::CombatDamage,
             Phase::EndCombat,
         ] {
             state.phase = phase;
+            state.combat = Some(declared());
             assert!(
-                casting_restriction_applies(
-                    &state,
-                    PlayerId(0),
-                    ObjectId(1),
-                    &CastingRestriction::AfterBlockersDeclared
-                ),
-                "{phase:?} follows blocker declaration and must be included"
+                applies(&state),
+                "{phase:?} after the declare-blockers action must be included"
             );
         }
 
-        // Outside combat — excluded.
+        // CR 506.7f: a combat where the declare-blockers step was skipped never
+        // records a declaration, so even combat damage / end of combat are
+        // excluded.
+        for phase in [Phase::CombatDamage, Phase::EndCombat] {
+            state.phase = phase;
+            state.combat = Some(CombatState::default());
+            assert!(
+                !applies(&state),
+                "{phase:?} in a skipped-declare-blockers combat must be excluded"
+            );
+        }
+
+        // Before blockers are declared: begin-combat and declare-attackers have
+        // no recorded declaration — excluded.
+        for phase in [Phase::BeginCombat, Phase::DeclareAttackers] {
+            state.phase = phase;
+            state.combat = Some(CombatState::default());
+            assert!(
+                !applies(&state),
+                "{phase:?} precedes blocker declaration and must be excluded"
+            );
+        }
+
+        // Outside combat entirely — excluded even if a stale declaration flag
+        // somehow survived (the phase guard closes the window).
         state.phase = Phase::PostCombatMain;
-        assert!(!casting_restriction_applies(
-            &state,
-            PlayerId(0),
-            ObjectId(1),
-            &CastingRestriction::AfterBlockersDeclared
-        ));
+        state.combat = Some(declared());
+        assert!(!applies(&state), "post-combat main must be excluded");
+        state.combat = None;
+        assert!(!applies(&state), "no combat state must be excluded");
     }
 
     #[test]
