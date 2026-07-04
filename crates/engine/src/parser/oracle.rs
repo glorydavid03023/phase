@@ -12,10 +12,10 @@ use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AbilityTag,
     ActivationRestriction, AdditionalCost, CastTimingPermission, CastingRestriction, ChoiceType,
     ChosenSubtypeKind, ContinuousModification, ControllerRef, CostReduction,
-    DelayedTriggerCondition, Effect, FilterProp, ManaProduction, ModalChoice, ParsedCondition,
-    PlayerFilter, QuantityExpr, QuantityRef, ReplacementDefinition, SolveCondition,
-    SpellCastingOption, StaticCondition, StaticDefinition, TargetFilter, TriggerCondition,
-    TriggerDefinition, TypedFilter,
+    DelayedTriggerCondition, Duration, Effect, EffectScope, FilterProp, ManaProduction,
+    ModalChoice, ParsedCondition, PlayerFilter, QuantityExpr, QuantityRef, ReplacementDefinition,
+    SolveCondition, SpellCastingOption, StaticCondition, StaticDefinition, TapStateChange,
+    TargetFilter, TriggerCondition, TriggerDefinition, TypedFilter,
 };
 use crate::types::format::DeckCopyLimit;
 use crate::types::keywords::{EscapeCost, FlashbackCost, Keyword, KeywordKind};
@@ -23,6 +23,7 @@ use crate::types::mana::ManaCost;
 use crate::types::phase::Phase;
 use crate::types::player::PlayerId;
 use crate::types::replacements::ReplacementEvent;
+use crate::types::statics::StaticMode;
 use crate::types::triggers::TriggerMode;
 use crate::types::zones::Zone;
 
@@ -54,8 +55,9 @@ use super::oracle_cost::{parse_oracle_cost, parse_single_cost, try_parse_cost_re
 use super::oracle_dispatch::dispatch_line_nom;
 use super::oracle_effect::sequence::try_parse_same_is_true_continuation;
 use super::oracle_effect::{
-    lower_effect_chain_ir, parse_effect_chain, parse_effect_chain_with_context,
-    rewrite_condition_keyword, try_parse_temporal_delayed_trigger_ability,
+    lower_effect_chain_ir, parse_additional_cost_instead_condition_fragment, parse_effect_chain,
+    parse_effect_chain_with_context, rewrite_condition_keyword,
+    try_parse_temporal_delayed_trigger_ability,
 };
 use super::oracle_ir::context::ParseContext;
 use super::oracle_ir::diagnostic::OracleDiagnostic;
@@ -88,7 +90,8 @@ use super::oracle_static::{
     parse_collect_evidence_alt_cost, parse_every_creature_type_static_prefix,
     parse_flashback_trailing_self_spell_cost_reduction, parse_spells_alternative_cost,
     parse_static_line, parse_static_line_multi, try_parse_graveyard_keyword_grant_clause,
-    try_parse_graveyard_keyword_grant_static, GraveyardGrantedKeywordKind,
+    try_parse_graveyard_keyword_grant_static, try_parse_top_of_library_cast_permission,
+    GrantedCastKeywordKind,
 };
 use super::oracle_trigger::{lower_trigger_ir, parse_trigger_lines_at_index};
 use super::oracle_util::{
@@ -639,7 +642,7 @@ fn parsed_result_recently_granted_flashback(result: &ParsedAbilities) -> bool {
 
 pub(crate) fn parse_graveyard_keyword_continuation(
     text: &str,
-    kind: GraveyardGrantedKeywordKind,
+    kind: GrantedCastKeywordKind,
 ) -> Option<Keyword> {
     fn continuation_fully_consumed(rest: &str) -> bool {
         rest.trim().trim_end_matches('.').trim().is_empty()
@@ -655,10 +658,39 @@ pub(crate) fn parse_graveyard_keyword_continuation(
         Some(rest)
     }
 
+    /// CR 601.2f: Parse an optional "reduced by {N}" suffix on a granted
+    /// "[keyword] cost is equal to its mana cost" continuation (Dream Devourer's
+    /// "reduced by {2}", Aminatou's "reduced by {4}"). Returns the GENERIC
+    /// component of the parsed cost as the reduction (colored pips in the
+    /// reduction phrase would be non-generic and ignored — real cards state
+    /// generic-only reductions), or `0` when the suffix is absent. The remaining
+    /// slice after the (optional) suffix is returned so the caller can enforce
+    /// `continuation_fully_consumed`.
+    fn parse_reduced_by_generic_suffix(text: &str) -> (u32, &str) {
+        let lower = text.to_lowercase();
+        nom_on_lower(text, &lower, |i| {
+            let (i, reduction) = opt(preceded(
+                (
+                    nom::character::complete::space0,
+                    tag("reduced by "),
+                    nom::character::complete::space0,
+                ),
+                super::oracle_nom::primitives::parse_mana_cost,
+            ))
+            .parse(i)?;
+            let generic = match reduction {
+                Some(ManaCost::Cost { generic, .. }) => generic,
+                _ => 0,
+            };
+            Ok((i, generic))
+        })
+        .map_or((0, text), |(generic, rest)| (generic, rest))
+    }
+
     let lower = text.to_lowercase();
 
     match kind {
-        GraveyardGrantedKeywordKind::Flashback => {
+        GrantedCastKeywordKind::Flashback => {
             let (_, rest) = nom_on_lower(text, &lower, |i| {
                 value((), tag("the flashback cost is equal to ")).parse(i)
             })?;
@@ -670,7 +702,7 @@ pub(crate) fn parse_graveyard_keyword_continuation(
                 ManaCost::SelfManaCost,
             )))
         }
-        GraveyardGrantedKeywordKind::Escape => {
+        GrantedCastKeywordKind::Escape => {
             let (_, rest) = nom_on_lower(text, &lower, |i| {
                 value((), tag("the escape cost is equal to ")).parse(i)
             })?;
@@ -708,7 +740,7 @@ pub(crate) fn parse_graveyard_keyword_continuation(
                 },
             )))
         }
-        GraveyardGrantedKeywordKind::Mayhem => {
+        GrantedCastKeywordKind::Mayhem => {
             // CR 702.187b: "The mayhem cost is equal to [its/that card's/the
             // card's] mana cost." (Green Goblin's Goblin Formula). Mirrors the
             // Flashback continuation; the cost resolves to the card's own mana
@@ -722,7 +754,7 @@ pub(crate) fn parse_graveyard_keyword_continuation(
             }
             Some(Keyword::Mayhem(ManaCost::SelfManaCost))
         }
-        GraveyardGrantedKeywordKind::Scavenge => {
+        GrantedCastKeywordKind::Scavenge => {
             // CR 702.97a: "The scavenge cost is equal to its mana cost." (Varolz,
             // the Scar-Striped; Young Deathclaws; The Cave of Skulls). Mirrors the
             // Flashback continuation; cost resolves to the card's own mana cost.
@@ -742,7 +774,7 @@ pub(crate) fn parse_graveyard_keyword_continuation(
             }
             Some(Keyword::Scavenge(ManaCost::SelfManaCost))
         }
-        GraveyardGrantedKeywordKind::Encore => {
+        GrantedCastKeywordKind::Encore => {
             // CR 702.141a: "Its encore cost is equal to its mana cost." (Wire
             // Surgeons). Same shape as scavenge.
             let (_, rest) = nom_on_lower(text, &lower, |i| {
@@ -760,6 +792,58 @@ pub(crate) fn parse_graveyard_keyword_continuation(
                 return None;
             }
             Some(Keyword::Encore(ManaCost::SelfManaCost))
+        }
+        GrantedCastKeywordKind::Foretell => {
+            // CR 702.143a + CR 601.2f: "Its foretell cost is equal to its mana
+            // cost reduced by {N}." (Dream Devourer, reduced by {2}). The bare
+            // "reduced by {0}"-absent form yields `SelfManaCost`; a nonzero
+            // reduction yields `SelfManaCostReduced`, both concretized at the
+            // runtime stamp point (`resolve_keyword_mana_cost`).
+            let (_, rest) = nom_on_lower(text, &lower, |i| {
+                value(
+                    (),
+                    alt((
+                        tag("its foretell cost is equal to "),
+                        tag("the foretell cost is equal to "),
+                    )),
+                )
+                .parse(i)
+            })?;
+            let rest = parse_self_mana_cost_suffix(rest)?;
+            let (reduction, rest) = parse_reduced_by_generic_suffix(rest);
+            if !continuation_fully_consumed(rest) {
+                return None;
+            }
+            Some(Keyword::Foretell(if reduction == 0 {
+                ManaCost::SelfManaCost
+            } else {
+                ManaCost::SelfManaCostReduced { reduction }
+            }))
+        }
+        GrantedCastKeywordKind::Miracle => {
+            // CR 702.94a + CR 601.2f: "Its miracle cost is equal to its mana cost
+            // reduced by {N}." (Aminatou, Veil Piercer, reduced by {4}). Same
+            // shape as the foretell continuation.
+            let (_, rest) = nom_on_lower(text, &lower, |i| {
+                value(
+                    (),
+                    alt((
+                        tag("its miracle cost is equal to "),
+                        tag("the miracle cost is equal to "),
+                    )),
+                )
+                .parse(i)
+            })?;
+            let rest = parse_self_mana_cost_suffix(rest)?;
+            let (reduction, rest) = parse_reduced_by_generic_suffix(rest);
+            if !continuation_fully_consumed(rest) {
+                return None;
+            }
+            Some(Keyword::Miracle(if reduction == 0 {
+                ManaCost::SelfManaCost
+            } else {
+                ManaCost::SelfManaCostReduced { reduction }
+            }))
         }
     }
 }
@@ -1147,6 +1231,145 @@ fn retarget_creature_type_choice_dig_filters_in_ability(def: &mut AbilityDefinit
     }
 }
 
+/// CR 702.26a + CR 603.7c: Upgrade bare one-shot `PhaseOut` ETB effects that
+/// carry a host-bound re-entry rider ("Tap that creature as it phases in this
+/// way", Oubliette) into PhaseOut + CantPhaseIn + delayed PhaseIn/Tap.
+fn reconcile_host_bound_phase_outs(result: &mut ParsedAbilities) {
+    for ability in &mut result.abilities {
+        reconcile_host_bound_phase_outs_in_ability(ability);
+    }
+    for trigger in &mut result.triggers {
+        if let Some(execute) = trigger.execute.as_mut() {
+            reconcile_host_bound_phase_outs_in_ability(execute);
+        }
+    }
+}
+
+fn reconcile_host_bound_phase_outs_in_ability(def: &mut AbilityDefinition) {
+    let should_upgrade = matches!(*def.effect, Effect::PhaseOut { .. })
+        && def
+            .sub_ability
+            .as_ref()
+            .is_some_and(|sub| chain_contains_host_bound_tap_rider(sub.as_ref()));
+    if should_upgrade {
+        upgrade_host_bound_phase_out_at_head(def);
+        return;
+    }
+    if let Some(sub) = def.sub_ability.as_mut() {
+        reconcile_host_bound_phase_outs_in_ability(sub);
+    }
+}
+
+fn chain_contains_host_bound_tap_rider(def: &AbilityDefinition) -> bool {
+    if is_host_bound_phase_in_tap_rider_node(def) {
+        return true;
+    }
+    def.sub_ability
+        .as_ref()
+        .is_some_and(|sub| chain_contains_host_bound_tap_rider(sub.as_ref()))
+}
+
+fn upgrade_host_bound_phase_out_at_head(def: &mut AbilityDefinition) {
+    let Effect::PhaseOut { target } = *def.effect.clone() else {
+        return;
+    };
+
+    let (tail, removed_rider) = remove_host_bound_tap_rider_from_chain(def.sub_ability.take());
+    if !removed_rider {
+        def.sub_ability = tail;
+        return;
+    }
+
+    let cant_phase_in = Effect::GenericEffect {
+        static_abilities: vec![StaticDefinition::new(StaticMode::CantPhaseIn)
+            .affected(TargetFilter::ParentTarget)
+            .modifications(vec![ContinuousModification::AddStaticMode {
+                mode: StaticMode::CantPhaseIn,
+            }])],
+        duration: Some(Duration::UntilHostLeavesPlay),
+        target: Some(TargetFilter::ParentTarget),
+    };
+
+    let mut return_ability = AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::PhaseIn {
+            target: TargetFilter::ParentTarget,
+        },
+    );
+    return_ability.sub_ability = Some(Box::new(AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::SetTapState {
+            target: TargetFilter::ParentTarget,
+            scope: EffectScope::Single,
+            state: TapStateChange::Tap,
+        },
+    )));
+
+    let mut delayed = AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::CreateDelayedTrigger {
+            condition: DelayedTriggerCondition::WhenLeavesPlayFiltered {
+                filter: TargetFilter::SelfRef,
+            },
+            effect: Box::new(return_ability),
+            uses_tracked_set: false,
+        },
+    );
+    delayed.sub_ability = tail;
+
+    let mut lock = AbilityDefinition::new(AbilityKind::Spell, cant_phase_in);
+    lock.sub_ability = Some(Box::new(delayed));
+
+    *def.effect = Effect::PhaseOut { target };
+    def.sub_ability = Some(Box::new(lock));
+}
+
+/// Remove only the host-bound tap rider node, preserving any intervening siblings.
+fn remove_host_bound_tap_rider_from_chain(
+    chain: Option<Box<AbilityDefinition>>,
+) -> (Option<Box<AbilityDefinition>>, bool) {
+    let Some(mut node) = chain else {
+        return (None, false);
+    };
+
+    if is_host_bound_phase_in_tap_rider_node(&node) {
+        return (node.sub_ability.take(), true);
+    }
+
+    if let Some(sub) = node.sub_ability.take() {
+        let (new_sub, found) = remove_host_bound_tap_rider_from_chain(Some(sub));
+        node.sub_ability = new_sub;
+        if found {
+            return (Some(node), true);
+        }
+    }
+
+    (Some(node), false)
+}
+
+fn is_host_bound_phase_in_tap_rider_node(def: &AbilityDefinition) -> bool {
+    if !matches!(
+        def.effect.as_ref(),
+        Effect::SetTapState {
+            state: TapStateChange::Tap,
+            target: TargetFilter::ParentTarget,
+            ..
+        }
+    ) {
+        return false;
+    }
+    def.description
+        .as_deref()
+        .is_some_and(host_bound_phase_in_tap_phrase)
+}
+
+fn host_bound_phase_in_tap_phrase(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    scan_contains(&lower, "as it phases in this way")
+        || scan_contains(&lower, "as that creature phases in this way")
+        || scan_contains(&lower, "as that permanent phases in this way")
+}
+
 fn chosen_kind_from_card_types(types: &[String]) -> Option<ChosenSubtypeKind> {
     if types.iter().any(|card_type| card_type == "Creature") {
         Some(ChosenSubtypeKind::CreatureType)
@@ -1183,7 +1406,7 @@ fn chosen_subtype_kind_from_persisted_choice(
 fn chosen_subtype_kind_from_ability(def: &AbilityDefinition) -> Option<ChosenSubtypeKind> {
     match def.effect.as_ref() {
         Effect::Choose {
-            choice_type: ChoiceType::CreatureType,
+            choice_type: ChoiceType::CreatureType { .. },
             persist: true,
             ..
         } => Some(ChosenSubtypeKind::CreatureType),
@@ -1366,6 +1589,14 @@ fn strip_instead_clause(
     // Pattern: " instead if [condition]" — mid-line "instead" followed by condition
     if let Some((before, after)) = tp.rsplit_around(" instead if ") {
         let condition_text = after.lower.trim().trim_end_matches('.');
+        // CR 608.2c + CR 601.2b: An inverted additional-cost / gift "instead if"
+        // is folded to the dedicated `AdditionalCostPaidInstead` by the chain's
+        // `strip_additional_cost_conditional`. Defer the whole line so the chain
+        // builds the conditional else_ability (Cinder Strike) rather than the
+        // line-level path dropping the unrecognized condition here.
+        if parse_additional_cost_instead_condition_fragment(condition_text).is_some() {
+            return (text.to_string(), None, false);
+        }
         // CR 614.1a + CR 608.2c: an inverted "instead if <cond>" followed by a further
         // printed instruction (Throw from the Saddle: "… instead if it's a Mount. Then it
         // deals damage …") is an INTRA-CHAIN override, not a whole-line replacement. The
@@ -1377,6 +1608,19 @@ fn strip_instead_clause(
         if condition_text.contains('.') {
             // allow-noncombinator: structural sentence-boundary split (mirrors the
             // pattern-3 `before_trim.contains('.')` guard below), not parsing dispatch
+            return (text.to_string(), None, false);
+        }
+        // CR 608.2c + CR 614.1a: A multi-sentence effect line
+        // ("[prior sentence]. [effect] instead if <cond>", e.g. Steer Clear) is an
+        // INTRA-CHAIN override — the "instead" replaces only the trailing sentence's
+        // effect, not the whole line, and its condition ("you controlled a Mount as
+        // you cast this spell") is owned by the chain-level `parse_condition_text`
+        // recognizers, not the line-level `parse_inner_condition`. Defer the whole
+        // line to the chain parser (mirrors the pattern-3 `before_trim.contains('.')`
+        // guard below) so `try_parse_generic_instead_clause` builds the conditional
+        // sub-ability and the prior sentence is preserved.
+        if before.original.trim().trim_end_matches('.').contains('.') {
+            // allow-noncombinator: structural sentence-boundary split, not parsing dispatch
             return (text.to_string(), None, false);
         }
         let condition = parse_inner_condition(condition_text)
@@ -3297,6 +3541,45 @@ pub(crate) fn parse_oracle_ir(
             continue;
         }
 
+        // CR 207.2c + CR 401.5 + CR 601.1a + CR 603.12: an (optionally
+        // ability-word-prefixed) top-of-library play/cast permission carrying a
+        // reflexive "When you do, <effect>" rider (The Fourth Doctor). Emits
+        // the permission static so play-from-library works, and marks the rider
+        // as an honest unsupported gap (TriggerMode::Unknown) — the reflexive
+        // trigger cannot be correctly scoped until the casting/land-play
+        // pipeline records which permission authorized each play (CR 603.12
+        // provenance limitation: a global PlayCard trigger cannot distinguish
+        // WHICH permission authorized a given play). Must precede Priority 7
+        // (the static-only path would silently drop the rider, hiding the gap).
+        {
+            let permission_line = strip_ability_word(&line).unwrap_or_else(|| line.clone());
+            let permission_lower = permission_line.to_lowercase();
+            if let Some((perm_text, _)) =
+                split_once_on_lower(&permission_line, &permission_lower, ". when you do, ")
+            {
+                let perm_lower = perm_text.to_lowercase();
+                if let Some(static_def) =
+                    try_parse_top_of_library_cast_permission(perm_text, &perm_lower)
+                {
+                    // CR 603.12 (deferred): emit TriggerMode::Unknown so the
+                    // rider gap is visible in coverage instead of approximating
+                    // incorrect provenance with a rules-incorrect PlayCard
+                    // trigger. No context mutation: we do not parse the rider
+                    // body here (avoids ctx.subject/actor leakage into
+                    // subsequent lines).
+                    let rider_gap =
+                        TriggerDefinition::new(TriggerMode::Unknown("when you do".to_string()))
+                            .description(line.to_string());
+                    result
+                        .statics
+                        .push(static_def.description(line.to_string()));
+                    result.triggers.push(rider_gap);
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+
         // CR 702.34a: Flashback em-dash / compound self-spell cost-reduction lines.
         // Must run before Priority 7 static patterns: "This spell costs {X} less
         // to cast this way" matches `is_static_pattern` and would swallow the
@@ -4184,6 +4467,7 @@ pub(crate) fn parse_oracle_ir(
 
     reconcile_choose_then_chosen_dependent_etb_counters(&mut result);
     reconcile_self_chosen_type_statics(&mut result, types);
+    reconcile_host_bound_phase_outs(&mut result);
 
     // Architectural rule: the parser must never silently discard Oracle
     // text. Run the swallow audit against the parsed result so any unrep-

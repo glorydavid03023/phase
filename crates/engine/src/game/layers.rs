@@ -1914,6 +1914,11 @@ pub fn evaluate_layers(state: &mut GameState) {
     // fresh cache for the next incremental flush's truth-delta consult.
     refresh_static_gate_truth(state);
 
+    // Rebuild the O(1) `StaticModeKind` presence index from the fully-derived board,
+    // immediately after the gate-truth cache and before `layers_dirty = Clean`, so a full
+    // eval always leaves a precise presence index for the next scan-gate consult.
+    refresh_static_mode_presence(state);
+
     // CR 603.6a + CR 611.2e: Layer evaluation just finalized post-layer
     // trigger sets on every battlefield permanent (granted triggers from
     // sliver lords, Changeling, Bramble Sovereign, suppress-triggers statics).
@@ -2107,6 +2112,8 @@ fn quantity_ref_reads_zone(qty: &QuantityRef, zone: Zone) -> bool {
         | QuantityRef::AdditionalCostPaymentCountFor { .. }
         | QuantityRef::AttackedThisTurn { .. }
         | QuantityRef::BattlefieldEntriesThisTurn { .. }
+        // Per-turn bend-type tracking (Avatar Aang) — turn history, not a zone read.
+        | QuantityRef::BendTypesThisTurn
         | QuantityRef::ChosenNumber
         | QuantityRef::ColorsInCommandersColorIdentity
         | QuantityRef::CommanderCastFromCommandZoneCount
@@ -2193,6 +2200,12 @@ pub fn flush_layers(state: &mut GameState) {
             if let Some(prepared) = prepare_incremental_flush(state, &ids) {
                 super::perf_counters::record_layers_incremental();
                 apply_layers_incremental(state, prepared);
+                // Rebuild the presence index so the incremental arm leaves a PRECISE index
+                // (not a conservative superset). The incremental path is already
+                // O(battlefield): `prepare_incremental_flush` unconditionally calls
+                // `StaticSourceIndex::rebuild_from_state`, so a full presence rebuild here is
+                // DRY, matches the sibling-cache convention, and adds no asymptotic cost.
+                refresh_static_mode_presence(state);
                 for id in &ids {
                     super::public_state::mark_public_state_object_dirty(state, *id);
                 }
@@ -2501,6 +2514,19 @@ fn refresh_static_gate_truth(state: &mut GameState) {
         }
     });
     state.static_gate_truth = next;
+}
+
+/// Rebuild the O(1) `StaticModeKind` presence index wholesale from the same
+/// `game_functioning_statics` iterator its consumers would otherwise scan, so the index is
+/// exactly `.any(|(_, d)| d.mode.kind() == kind)` for every kind — no false negatives. The
+/// fold accumulates into a local `StaticModePresence` first (the iterator borrows `state`),
+/// then assigns.
+fn refresh_static_mode_presence(state: &mut GameState) {
+    let mut presence = crate::types::statics::StaticModePresence::empty();
+    for (_, def) in super::functioning_abilities::game_functioning_statics(state) {
+        presence.insert(def.mode.kind());
+    }
+    state.static_mode_presence = presence;
 }
 
 /// CR 613.1: Continuous effects are applied in layers to determine object characteristics.
@@ -4431,6 +4457,21 @@ fn apply_continuous_effect_filtered(
         None
     };
 
+    // Pre-read chosen card name from source (avoids borrow conflict in the loop).
+    // CR 612.8 + CR 613.1c: `SetChosenName` sets the recipient's name to the
+    // granting source's chosen card name. Read once here (the source's most recent
+    // `ChosenAttribute::CardName`) so the per-recipient loop can assign without
+    // re-borrowing `state` — mirrors the `chosen_color` / `chosen_subtype` /
+    // `chosen_card_type` pre-read blocks above.
+    let chosen_card_name = if matches!(effect.modification, ContinuousModification::SetChosenName) {
+        state
+            .objects
+            .get(&effect.source_id)
+            .and_then(|src| src.chosen_card_name().map(str::to_string))
+    } else {
+        None
+    };
+
     // CR 613.1b: For Layer 2 ChangeController, the new controller is the effect's
     // own `controller` field — set authoritatively by the effect that queued the
     // continuous modification (e.g. gain_control passes `ability.controller`,
@@ -4545,6 +4586,15 @@ fn apply_continuous_effect_filtered(
             // follows `CopyValues` in `add_transient_continuous_effect`).
             ContinuousModification::SetName { name } => {
                 obj.name = name.clone();
+            }
+            // CR 612.8 + CR 613.1c: Layer 3 — set the object's name to the
+            // granting source's chosen card name. Per CR 612.8 the object loses
+            // any other names. No-op until a name has been chosen (`chosen_card_name`
+            // pre-read above is `None`), so the printed name is retained.
+            ContinuousModification::SetChosenName => {
+                if let Some(ref name) = chosen_card_name {
+                    obj.name = name.clone();
+                }
             }
             ContinuousModification::AddPower { value } => {
                 if let Some(ref mut p) = obj.power {
@@ -9899,6 +9949,7 @@ mod tests {
                 amount: QuantityExpr::Fixed { value: 1 },
                 target: TargetFilter::Any,
                 damage_source: None,
+                excess: None,
             },
         )
         .cost(AbilityCost::Tap);
@@ -10897,6 +10948,81 @@ mod tests {
         assert!(
             !land.card_types.subtypes.contains(&"Forest".to_string()),
             "Land should no longer have Forest subtype"
+        );
+    }
+
+    /// CR 612.8 + CR 613.7: SetChosenName renames the equipped creature to the
+    /// granting source's chosen card name; with no choice recorded it is a no-op,
+    /// and a re-choice (appended) supersedes the prior name (most recent wins).
+    #[test]
+    fn set_chosen_name_renames_equipped_creature_to_source_choice() {
+        use crate::types::ability::ChosenAttribute;
+
+        let mut state = setup();
+        let p0 = PlayerId(0);
+
+        let creature_id = make_creature(&mut state, "Grizzly Bears", 2, 2, p0);
+
+        // An Equipment whose static sets the equipped creature's name to the
+        // Equipment's own chosen card name.
+        let equip_id = create_object(
+            &mut state,
+            CardId(1),
+            p0,
+            "Psychic Paper".to_string(),
+            Zone::Battlefield,
+        );
+        let ts = state.next_timestamp();
+        {
+            let obj = state.objects.get_mut(&equip_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.card_types.subtypes.push("Equipment".to_string());
+            obj.base_card_types = obj.card_types.clone();
+            obj.timestamp = ts;
+            obj.static_definitions.push(
+                StaticDefinition::continuous()
+                    .affected(TargetFilter::Typed(
+                        TypedFilter::creature().properties(vec![FilterProp::EquippedBy]),
+                    ))
+                    .modifications(vec![ContinuousModification::SetChosenName]),
+            );
+        }
+        state.objects.get_mut(&equip_id).unwrap().attached_to = Some(creature_id.into());
+
+        // No choice recorded yet → printed name retained (no-op).
+        evaluate_layers(&mut state);
+        assert_eq!(
+            state.objects.get(&creature_id).unwrap().name,
+            "Grizzly Bears",
+            "with no chosen name the equipped creature keeps its printed name"
+        );
+
+        // Record a chosen card name on the Equipment → creature is renamed.
+        state
+            .objects
+            .get_mut(&equip_id)
+            .unwrap()
+            .chosen_attributes
+            .push(ChosenAttribute::CardName("Llanowar Elves".to_string()));
+        evaluate_layers(&mut state);
+        assert_eq!(
+            state.objects.get(&creature_id).unwrap().name,
+            "Llanowar Elves",
+            "the equipped creature takes the source's chosen card name"
+        );
+
+        // A re-choice appends; CR 613.7 — the most recent choice wins.
+        state
+            .objects
+            .get_mut(&equip_id)
+            .unwrap()
+            .chosen_attributes
+            .push(ChosenAttribute::CardName("Birds of Paradise".to_string()));
+        evaluate_layers(&mut state);
+        assert_eq!(
+            state.objects.get(&creature_id).unwrap().name,
+            "Birds of Paradise",
+            "the latest chosen card name supersedes the prior one"
         );
     }
 
@@ -14517,6 +14643,7 @@ mod tests {
                 chosen_attributes: Vec::new(),
                 counters: std::collections::HashMap::new(),
                 tapped: false,
+                is_suspected: false,
             },
         );
 
@@ -16141,6 +16268,124 @@ mod tests {
         assert_eq!(
             ctrl.name, "Secret Bear",
             "the controller still sees the real back-face identity"
+        );
+    }
+
+    // ── StaticModePresence refresh tests (Verification Matrix D/F) ──
+
+    /// Test D — incremental-arm refresh. A battlefield entrant carrying an `IgnoreHexproof`
+    /// static (a non-`Continuous` static, so the flush takes the incremental fast path) must
+    /// still leave the presence index PRECISE. Advisory A: establish a precise presence=false
+    /// baseline via a FULL flush FIRST, so assertion (2) cannot pass vacuously.
+    #[test]
+    fn incremental_flush_refreshes_static_mode_presence() {
+        use crate::types::statics::StaticModeKind;
+        let mut state = setup();
+        // Baseline: full flush with NO IgnoreHexproof static => precise presence = false.
+        evaluate_layers(&mut state);
+        assert!(
+            !crate::game::functioning_abilities::static_kind_present(
+                &state,
+                StaticModeKind::IgnoreHexproof
+            ),
+            "baseline: no IgnoreHexproof static means presence is precisely false"
+        );
+
+        // Entrant carries an object-scoped IgnoreHexproof static (mode != Continuous => the
+        // incremental fast path handles it, no full escalation).
+        let entrant = make_creature(&mut state, "Nowhere to Run", 2, 2, PlayerId(0));
+        state.objects.get_mut(&entrant).unwrap().static_definitions =
+            vec![
+                StaticDefinition::new(StaticMode::IgnoreHexproof).affected(TargetFilter::Typed(
+                    TypedFilter::creature().controller(ControllerRef::Opponent),
+                )),
+            ]
+            .into();
+
+        crate::game::perf_counters::reset();
+        state.layers_dirty = LayersDirty::EnteredObjects([entrant].into());
+        flush_layers(&mut state);
+        let counters = crate::game::perf_counters::snapshot();
+
+        // (1) Branch proof: the incremental arm ran (NOT a Full escalation).
+        assert_eq!(
+            counters.layers_incremental, 1,
+            "must take the incremental arm, not escalate"
+        );
+        assert_eq!(counters.layers_full_eval, 0, "must not escalate to full");
+        // (2) Revert guard: presence now reports IgnoreHexproof present. Removing the
+        //     Step 4c refresh_static_mode_presence call leaves this stale-false.
+        assert!(
+            crate::game::functioning_abilities::static_kind_present(
+                &state,
+                StaticModeKind::IgnoreHexproof
+            ),
+            "incremental flush must refresh the presence index"
+        );
+        // (3) A kind absent from the board still reports false — the incremental arm builds a
+        //     PRECISE index, not a conservative all-present one.
+        assert!(
+            !crate::game::functioning_abilities::static_kind_present(
+                &state,
+                StaticModeKind::Shroud
+            ),
+            "incremental refresh must remain precise for absent kinds"
+        );
+    }
+
+    /// Test F — building-block equivalence (the Unit 2/3 contract). After a full flush on a
+    /// mixed board (a phased-out static, plus plain battlefield statics of distinct kinds),
+    /// the presence index must equal `game_functioning_statics().any(kind == K)` for EVERY
+    /// kind. `StaticModePresence: PartialEq` compares the whole discriminant array, so a
+    /// single `assert_eq!` IS the "for every K" check.
+    #[test]
+    fn static_mode_presence_equals_functioning_statics_fold() {
+        use crate::types::statics::{StaticModeKind, StaticModePresence};
+        let mut state = setup();
+        // Plain battlefield statics of two distinct kinds.
+        let a = make_creature(&mut state, "Ignore Hexproof Source", 1, 1, PlayerId(0));
+        state.objects.get_mut(&a).unwrap().static_definitions =
+            vec![StaticDefinition::new(StaticMode::IgnoreHexproof)].into();
+        let b = make_creature(&mut state, "CantBeTargeted Source", 1, 1, PlayerId(0));
+        state.objects.get_mut(&b).unwrap().static_definitions =
+            vec![StaticDefinition::new(StaticMode::CantBeTargeted)].into();
+        // Phased-out permanent carrying a Shroud static — CR 702.26b excludes it from
+        // game_functioning_statics, so its kind must NOT appear in presence.
+        let phased = make_creature(&mut state, "Phased Shroud Source", 1, 1, PlayerId(0));
+        {
+            let obj = state.objects.get_mut(&phased).unwrap();
+            obj.static_definitions = vec![StaticDefinition::new(StaticMode::Shroud)].into();
+            obj.phase_status = crate::game::game_object::PhaseStatus::PhasedOut {
+                cause: crate::game::game_object::PhaseOutCause::Directly,
+            };
+        }
+
+        evaluate_layers(&mut state);
+
+        // Whole-array equivalence: recompute from the same iterator the consumers scan.
+        let mut expected = StaticModePresence::empty();
+        for (_, def) in crate::game::functioning_abilities::game_functioning_statics(&state) {
+            expected.insert(def.mode.kind());
+        }
+        assert_eq!(
+            expected, state.static_mode_presence,
+            "presence index must equal the game_functioning_statics fold for every kind"
+        );
+        // Explicit spot-checks of the interesting scopings.
+        assert!(crate::game::functioning_abilities::static_kind_present(
+            &state,
+            StaticModeKind::IgnoreHexproof
+        ));
+        assert!(crate::game::functioning_abilities::static_kind_present(
+            &state,
+            StaticModeKind::CantBeTargeted
+        ));
+        assert!(
+            !crate::game::functioning_abilities::static_kind_present(
+                &state,
+                StaticModeKind::Shroud
+            ),
+            "phased-out static (CR 702.26b) must not appear in presence"
         );
     }
 }
