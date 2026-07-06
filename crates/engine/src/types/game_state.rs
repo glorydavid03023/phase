@@ -1910,6 +1910,12 @@ pub struct PendingCast {
     /// base, so `Option` is the only safe sentinel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_cost: Option<ManaCost>,
+    /// CR 601.2b + CR 601.2f: Mana components of additional costs the caster
+    /// has declared for this spell (Buyback, Splice, Spree mode costs, etc.).
+    /// Recomputed totals start from `base_cost`, add these declarations, then
+    /// apply cost modifiers and floors in total-cost order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declared_mana_additions: Vec<ManaCost>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activation_cost: Option<AbilityCost>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1955,6 +1961,11 @@ pub struct PendingCast {
     /// selection resumes payment.
     #[serde(default)]
     pub additional_cost_source: SpellCostSource,
+    /// CR 601.2f/h: Tap-payment mode contributed by an additional-cost mana
+    /// component (currently Waterbend). Stored on the pending cast so composite
+    /// costs can pay residual non-mana pieces before entering mana payment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub additional_cost_payment_mode: Option<ConvokeMode>,
     /// CR 601.2b + CR 700.2a: Modal spells with kicker-dependent mode caps
     /// announce kicker intent before choosing modes, but pay those costs later
     /// in the normal cost-payment step.
@@ -2052,6 +2063,7 @@ impl PendingCast {
             ability,
             cost,
             base_cost: None,
+            declared_mana_additions: Vec::new(),
             activation_cost: None,
             activation_ability_index: None,
             target_constraints: Vec::new(),
@@ -2063,6 +2075,7 @@ impl PendingCast {
             deferred_required_additional_cost: None,
             additional_cost_queue: Vec::new(),
             additional_cost_source: SpellCostSource::Other,
+            additional_cost_payment_mode: None,
             deferred_modal_choice: None,
             deferred_target_selection: false,
             chosen_modes: Vec::new(),
@@ -2089,6 +2102,8 @@ impl PendingCast {
 pub enum CollectEvidenceResume {
     Casting {
         pending_cast: Box<PendingCast>,
+        #[serde(default)]
+        source: SpellCostSource,
     },
     Effect {
         pending_ability: Box<ResolvedAbility>,
@@ -5097,7 +5112,7 @@ impl WaitingFor {
                 CostResume::ManaAbility { .. } => None,
             },
             WaitingFor::CollectEvidenceChoice { resume, .. } => match resume.as_ref() {
-                CollectEvidenceResume::Casting { pending_cast } => Some(pending_cast),
+                CollectEvidenceResume::Casting { pending_cast, .. } => Some(pending_cast),
                 CollectEvidenceResume::Effect { .. }
                 | CollectEvidenceResume::ManaAbility { .. } => None,
             },
@@ -5130,7 +5145,7 @@ impl WaitingFor {
                 CostResume::ManaAbility { .. } => None,
             },
             WaitingFor::CollectEvidenceChoice { resume, .. } => match resume.as_mut() {
-                CollectEvidenceResume::Casting { pending_cast } => Some(pending_cast),
+                CollectEvidenceResume::Casting { pending_cast, .. } => Some(pending_cast),
                 CollectEvidenceResume::Effect { .. }
                 | CollectEvidenceResume::ManaAbility { .. } => None,
             },
@@ -9825,6 +9840,7 @@ mod tests {
                 ),
                 cost: ManaCost::NoCost,
                 base_cost: None,
+                declared_mana_additions: Vec::new(),
                 activation_cost: None,
                 activation_ability_index: None,
                 target_constraints: vec![],
@@ -9836,6 +9852,7 @@ mod tests {
                 deferred_required_additional_cost: None,
                 additional_cost_queue: Vec::new(),
                 additional_cost_source: SpellCostSource::Other,
+                additional_cost_payment_mode: None,
                 deferred_modal_choice: None,
                 deferred_target_selection: false,
                 chosen_modes: Vec::new(),
@@ -10168,6 +10185,7 @@ mod tests {
             ),
             cost: ManaCost::NoCost,
             base_cost: None,
+            declared_mana_additions: Vec::new(),
             activation_cost: None,
             activation_ability_index: None,
             target_constraints: vec![],
@@ -10179,6 +10197,7 @@ mod tests {
             deferred_required_additional_cost: None,
             additional_cost_queue: Vec::new(),
             additional_cost_source: SpellCostSource::Other,
+            additional_cost_payment_mode: None,
             deferred_modal_choice: None,
             deferred_target_selection: false,
             chosen_modes: Vec::new(),
