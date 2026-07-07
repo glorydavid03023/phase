@@ -30,7 +30,8 @@ pub fn classify(waiting_for: &WaitingFor, action: &GameAction) -> DecisionKind {
         | WaitingFor::CopyRetarget { .. }
         | WaitingFor::RetargetChoice { .. }
         | WaitingFor::DistributeAmong { .. }
-        | WaitingFor::MoveCountersDistribution { .. } => DecisionKind::SelectTarget,
+        | WaitingFor::MoveCountersDistribution { .. }
+        | WaitingFor::RemoveCountersChoice { .. } => DecisionKind::SelectTarget,
         WaitingFor::DeclareAttackers { .. } => DecisionKind::DeclareAttackers,
         WaitingFor::DeclareBlockers { .. } => DecisionKind::DeclareBlockers,
         WaitingFor::UntapChoice { .. } => DecisionKind::ActivateAbility,
@@ -87,6 +88,7 @@ pub fn classify(waiting_for: &WaitingFor, action: &GameAction) -> DecisionKind {
         | WaitingFor::SearchPartitionChoice { .. }
         | WaitingFor::OutsideGameChoice { .. }
         | WaitingFor::ChooseFromZoneChoice { .. }
+        | WaitingFor::BeholdChoice { .. }
         | WaitingFor::ConniveDiscard { .. }
         | WaitingFor::DiscardChoice { .. }
         | WaitingFor::EffectZoneChoice { .. }
@@ -95,6 +97,7 @@ pub fn classify(waiting_for: &WaitingFor, action: &GameAction) -> DecisionKind {
         | WaitingFor::BetweenGamesSideboard { .. }
         | WaitingFor::BetweenGamesChoosePlayDraw { .. }
         | WaitingFor::NamedChoice { .. }
+        | WaitingFor::OpponentGuess { .. }
         | WaitingFor::SpellbookDraft { .. }
         | WaitingFor::ModeChoice { .. }
         | WaitingFor::DiscardToHandSize { .. }
@@ -156,6 +159,7 @@ pub fn classify(waiting_for: &WaitingFor, action: &GameAction) -> DecisionKind {
         | WaitingFor::AssistPayment { .. }
         | WaitingFor::ChooseObjectsSelection { .. }
         | WaitingFor::CategoryChoice { .. }
+        | WaitingFor::EachPlayerCopyChosenSelection { .. }
         | WaitingFor::KeepWithinTotalPowerChoice { .. }
         | WaitingFor::AssignCombatDamage { .. }
         // CR 510.1d + CR 702.22k: active player divides a banded blocker's
