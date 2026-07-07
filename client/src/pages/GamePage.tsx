@@ -11,7 +11,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Trans, useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 
-import type { DeckCardCount, GameFormat, MatchConfig, SerializedAbilityCost } from "../adapter/types";
+import type { DeckCardCount, GameFormat, MatchConfig, ObjectId, SerializedAbilityCost } from "../adapter/types";
 import { useDraftStore } from "../stores/draftStore";
 import { loadActiveQuickDraft } from "../services/quickDraftPersistence";
 import type { DraftMatchResult } from "../services/quickDraftPersistence";
@@ -1810,6 +1810,24 @@ function GamePageContent({
             (e) => e.player === playerId,
           );
           if (!entry) return null;
+          // CR 103.5b: bottoming is folded into the MulliganDecision variant as
+          // a per-entry BottomCards sub-phase resolved at this player's own
+          // declare point.
+          if (entry.phase.type === "BottomCards") {
+            return (
+              <MulliganBottomCardsPrompt
+                playerId={entry.player}
+                count={entry.phase.count}
+                openingHandBottom={false}
+                excludedCardId={
+                  entry.phase.then.type === "UseSerumPowder"
+                    ? entry.phase.then.object_id
+                    : undefined
+                }
+                onChoose={handleBottomCards}
+              />
+            );
+          }
           return (
             <MulliganDecisionPrompt
               playerId={entry.player}
@@ -1833,8 +1851,7 @@ function GamePageContent({
           </div>
         )}
 
-      {(waitingFor?.type === "MulliganBottomCards" ||
-        waitingFor?.type === "OpeningHandBottomCards") &&
+      {waitingFor?.type === "OpeningHandBottomCards" &&
         (() => {
           const entry = waitingFor.data.pending.find(
             (e) => e.player === playerId,
@@ -1844,7 +1861,7 @@ function GamePageContent({
             <MulliganBottomCardsPrompt
               playerId={entry.player}
               count={entry.count}
-              openingHandBottom={waitingFor.type === "OpeningHandBottomCards"}
+              openingHandBottom
               onChoose={handleBottomCards}
             />
           );
@@ -1957,6 +1974,10 @@ interface MulliganBottomCardsPromptProps {
   playerId: number;
   count: number;
   openingHandBottom?: boolean;
+  // CR 103.5b: when this bottom obligation completes into UseSerumPowder, the
+  // earmarked Powder object must stay in hand to be exiled by its own effect,
+  // so it is not selectable as a bottomed card (the engine rejects it too).
+  excludedCardId?: ObjectId;
   onChoose: (id: string) => void;
 }
 
@@ -2326,6 +2347,7 @@ function MulliganBottomCardsPrompt({
   playerId,
   count,
   openingHandBottom = false,
+  excludedCardId,
   onChoose,
 }: MulliganBottomCardsPromptProps) {
   const { t } = useTranslation("game");
@@ -2349,7 +2371,13 @@ function MulliganBottomCardsPrompt({
 
   if (!player || !objects) return null;
 
-  const handObjects = player.hand.map((id) => objects[id]).filter(Boolean);
+  // CR 103.5b: the earmarked Serum Powder object stays in hand to be exiled by
+  // its own effect, so it is excluded from the selectable bottom-cards set (the
+  // engine rejects any selection containing it).
+  const handObjects = player.hand
+    .filter((id) => id !== excludedCardId)
+    .map((id) => objects[id])
+    .filter(Boolean);
   const isReady = selectedCardIds.length === count;
 
   const handleConfirm = () => {
