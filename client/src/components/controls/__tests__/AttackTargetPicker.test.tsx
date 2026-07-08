@@ -1,62 +1,54 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AttackTarget, GameObject, GameState, ObjectId } from "../../../adapter/types.ts";
+import type { AttackTarget, ObjectId } from "../../../adapter/types.ts";
 import { AttackTargetPicker } from "../AttackTargetPicker.tsx";
 import { useGameStore } from "../../../stores/gameStore.ts";
 import { useMultiplayerStore } from "../../../stores/multiplayerStore.ts";
+import {
+  buildGameObjectWithCoreTypes,
+  buildObjectMap,
+} from "../../../test/factories/gameObjectFactory.ts";
+import { buildGameState } from "../../../test/factories/gameStateFactory.ts";
 
 const P1: AttackTarget = { type: "Player", data: 1 };
 const P2: AttackTarget = { type: "Player", data: 2 };
 const TARGETS: AttackTarget[] = [P1, P2];
 const ATTACKERS: ObjectId[] = [101, 102, 103];
 
-function makeObject(id: ObjectId, name: string): GameObject {
-  return {
+function makeCreature(id: ObjectId, name: string) {
+  return buildGameObjectWithCoreTypes(["Creature"], {
     id,
-    card_id: 1,
-    owner: 0,
-    controller: 0,
-    zone: "Battlefield",
-    tapped: false,
-    face_down: false,
-    flipped: false,
-    transformed: false,
-    damage_marked: 0,
-    dealt_deathtouch_damage: false,
-    attached_to: null,
-    attachments: [],
-    counters: {},
     name,
+    color: ["Red"],
+    base_color: ["Red"],
     power: 1,
     toughness: 1,
-    loyalty: null,
-    card_types: { supertypes: [], core_types: ["Creature"], subtypes: [] },
-    mana_cost: { type: "NoCost" },
-    keywords: [],
-    abilities: [],
-    trigger_definitions: [],
-    replacement_definitions: [],
-    static_definitions: [],
-    color: ["Red"],
     base_power: 1,
     base_toughness: 1,
-    base_keywords: [],
-    base_color: ["Red"],
-    timestamp: 1,
-    entered_battlefield_turn: 1,
-  };
+  });
 }
 
-function makeState(): GameState {
-  return {
+function makeState() {
+  return buildGameState({
     seat_order: [0, 1, 2],
-    objects: {
-      101: makeObject(101, "Goblin"),
-      102: makeObject(102, "Goblin"),
-      103: makeObject(103, "Goblin"),
-    },
-  } as unknown as GameState;
+    objects: buildObjectMap(
+      makeCreature(101, "Goblin"),
+      makeCreature(102, "Goblin"),
+      makeCreature(103, "Goblin"),
+    ),
+  });
+}
+
+function makeMixedState() {
+  return buildGameState({
+    seat_order: [0, 1, 2],
+    objects: buildObjectMap(
+      makeCreature(101, "Goblin"),
+      makeCreature(102, "Elf"),
+      makeCreature(103, "Dragon"),
+    ),
+  });
 }
 
 function renderPicker() {
@@ -112,6 +104,21 @@ describe("AttackTargetPicker", () => {
     fireEvent.click(confirm);
 
     expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(onConfirm).toHaveBeenCalledWith([
+      [101, P1],
+      [102, P1],
+      [103, P2],
+    ]);
+  });
+
+  it("even-splits all attackers globally instead of front-loading each singleton stack", () => {
+    useGameStore.setState({ gameState: makeMixedState() });
+    const { onConfirm } = renderPicker();
+    enterDistribute();
+
+    fireEvent.click(screen.getByRole("button", { name: "Even Split All" }));
+    fireEvent.click(screen.getByRole("button", { name: /Declare 3 Attackers/ }));
+
     expect(onConfirm).toHaveBeenCalledWith([
       [101, P1],
       [102, P1],

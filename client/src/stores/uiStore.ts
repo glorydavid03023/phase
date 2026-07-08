@@ -142,6 +142,15 @@ interface UiStoreState {
    *  inherit Tailwind's `transform` containing block and shrink the
    *  dialog. See DialogHost.tsx:113-122 for the contract. */
   enchantmentsDialogPlayer: number | null;
+  /** When non-null, the AttachmentFan is open: a centered spread of this host
+   *  plus every permanent (Aura / Equipment / Fortification) attached to it,
+   *  each card carrying its own live selection affordance. Opened by clicking
+   *  a permanent-with-attachments during a target / board-choice prompt (so an
+   *  attached Equipment that overlaps its host is reachable) and by the host's
+   *  ⧉ badge for out-of-prompt viewing / re-equip. The object-host counterpart
+   *  to `enchantmentsDialogPlayer` (player-attached Aura curses, which still
+   *  use the modal AttachmentsDialog). Cleared by `clearPromptOverlayState`. */
+  attachmentFanHostId: ObjectId | null;
   mobileHandOpen: boolean;
   /** Ephemeral hide-filter for the player's own hand (display-only). Lives here
    *  rather than in `preferencesStore` so it resets each game (cleared by
@@ -154,12 +163,19 @@ interface UiStoreState {
    *  panel straight to "actions" instead of the default "console" log view. */
   debugPanelTab: "console" | "actions";
   debugInteractionMode: boolean;
+  /** Whether the quick floating Click Mode control is pinned on-screen. The
+   *  mode itself stays in `debugInteractionMode`; this only controls access to
+   *  the fast toggle for repeated sandbox edits. */
+  debugClickModeButtonVisible: boolean;
   debugContextMenu: { objectId: ObjectId; x: number; y: number } | null;
   /** Debug-only library browser: when set, a modal lists the player's full
    *  library (in a stable randomized order) so individual cards can be moved to
    *  any zone via the standard debug context menu. `null` when closed. */
   debugLibraryViewer: { playerId: number } | null;
   helpSheetOpen: boolean;
+  /** Whether the "Report a card problem" picker dialog is open. A plain boolean
+   *  open-flag, mirroring the sandbox-tools / help-sheet open patterns. */
+  cardReportDialogOpen: boolean;
   /** Object currently being "previewed" by a debug-panel control (e.g. an
    *  ObjectSelect dropdown option under the cursor). Drives a distinct,
    *  always-obvious highlight on the board permanent / player avatar that is
@@ -222,6 +238,7 @@ interface UiStoreActions {
   setFocusedOpponent: (id: number | null) => void;
   setPendingAbilityChoice: (choice: { objectId: ObjectId; actions: GameAction[] } | null) => void;
   setEnchantmentsDialogPlayer: (id: number | null) => void;
+  setAttachmentFanHost: (id: ObjectId | null) => void;
   setMobileHandOpen: (open: boolean) => void;
   setHandFilter: (filter: FilterKey) => void;
   toggleDebugPanel: () => void;
@@ -229,12 +246,15 @@ interface UiStoreActions {
   /** Open the debug panel directly to the Actions ("Sandbox Tools") tab. */
   openSandboxTools: () => void;
   toggleDebugInteractionMode: () => void;
+  toggleDebugClickModeButtonVisible: () => void;
   openDebugContextMenu: (menu: { objectId: ObjectId; x: number; y: number }) => void;
   closeDebugContextMenu: () => void;
   openDebugLibraryViewer: (playerId: number) => void;
   closeDebugLibraryViewer: () => void;
   setHelpSheetOpen: (open: boolean) => void;
   toggleHelpSheet: () => void;
+  openCardReportDialog: () => void;
+  closeCardReportDialog: () => void;
   /** Set or clear the debug-panel preview highlight for an object. */
   setDebugHighlightedObjectId: (id: ObjectId | null) => void;
   /** Set or clear the debug-panel preview highlight for a player. */
@@ -274,14 +294,17 @@ export const useUiStore = create<UiStore>()((set, get) => ({
   focusedOpponent: null,
   pendingAbilityChoice: null,
   enchantmentsDialogPlayer: null,
+  attachmentFanHostId: null,
   mobileHandOpen: false,
   handFilter: "none",
   debugPanelOpen: false,
   debugPanelTab: "console",
   debugInteractionMode: false,
+  debugClickModeButtonVisible: false,
   debugContextMenu: null,
   debugLibraryViewer: null,
   helpSheetOpen: false,
+  cardReportDialogOpen: false,
   debugHighlightedObjectId: null,
   debugHighlightedPlayerId: null,
   logPanelOpen: false,
@@ -523,6 +546,7 @@ export const useUiStore = create<UiStore>()((set, get) => ({
   setFocusedOpponent: (id) => set({ focusedOpponent: id }),
   setPendingAbilityChoice: (choice) => set({ pendingAbilityChoice: choice }),
   setEnchantmentsDialogPlayer: (id) => set({ enchantmentsDialogPlayer: id }),
+  setAttachmentFanHost: (id) => set({ attachmentFanHostId: id }),
   setMobileHandOpen: (open) => set({ mobileHandOpen: open }),
   setHandFilter: (filter) => set({ handFilter: filter }),
   toggleDebugPanel: () => set((state) => ({ debugPanelOpen: !state.debugPanelOpen })),
@@ -532,12 +556,16 @@ export const useUiStore = create<UiStore>()((set, get) => ({
     debugInteractionMode: !state.debugInteractionMode,
     debugContextMenu: null,
   })),
+  toggleDebugClickModeButtonVisible: () =>
+    set((state) => ({ debugClickModeButtonVisible: !state.debugClickModeButtonVisible })),
   openDebugContextMenu: (menu) => set({ debugContextMenu: menu, selectedObjectId: menu.objectId }),
   closeDebugContextMenu: () => set({ debugContextMenu: null }),
   openDebugLibraryViewer: (playerId) => set({ debugLibraryViewer: { playerId } }),
   closeDebugLibraryViewer: () => set({ debugLibraryViewer: null }),
   setHelpSheetOpen: (open) => set({ helpSheetOpen: open }),
   toggleHelpSheet: () => set((state) => ({ helpSheetOpen: !state.helpSheetOpen })),
+  openCardReportDialog: () => set({ cardReportDialogOpen: true }),
+  closeCardReportDialog: () => set({ cardReportDialogOpen: false }),
   setLogPanelOpen: (open) => set({ logPanelOpen: open }),
   toggleLogPanel: () => set((state) => ({ logPanelOpen: !state.logPanelOpen })),
   setFlexEditMode: (active) => set({ flexEditMode: active }),
